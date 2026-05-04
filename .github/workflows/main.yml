@@ -1,0 +1,44 @@
+name: RPA Cencosud Venta Diaria
+
+on:
+  schedule:
+    # Corre todos los días a las 8:00 AM hora de Chile (UTC-3 = 11:00 UTC)
+    - cron: '0 11 * * *'
+  workflow_dispatch:  # permite correrlo manualmente desde GitHub
+
+jobs:
+  rpa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install playwright python-dotenv
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Ejecutar RPA
+        env:
+          CENC_USER: ${{ secrets.CENC_USER }}
+          CENC_PASS: ${{ secrets.CENC_PASS }}
+          HEADLESS: "true"
+        run: python rpa_venta_diaria_cencosud.py
+
+      - name: Subir logs y descarga como artefacto
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resultado-venta-diaria-${{ github.run_id }}
+          path: |
+            logs/
+            downloads/
+          retention-days: 7
