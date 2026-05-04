@@ -1,12 +1,19 @@
 """
-Script de diagnóstico para encontrar el botón ↓ del modal Detalle de Producto.
+RPA - Cencosud Venta Diaria
+============================
+Flujo:
+  1. Login (Chile + Supermercados + Keycloak SSO)
+  2. Menú Comercial → Ventas
+  3. Setear fecha AYER en ambos campos (Desde / Hasta)
+  4. Click Generar Informe
+  5. Doble click en celda adyacente a 1974206 → modal Detalle de Producto
+  6. Click botón ↓ @ (1075, 190) CONFIRMADO por diagnóstico
+  7. Click SELECCIONAR en modal Formato de Descarga
+  8. Click link Ventas(detalleProducto)*.zip → descarga
 
-Estrategia:
-1. Navega hasta el modal (mismo flujo que RPA Venta Diaria)
-2. Prueba sistemáticamente coordenadas en la zona superior derecha del modal
-3. Después de cada click verifica si apareció el modal "Formato de Descarga"
-4. Guarda screenshot de cada intento
-5. Al encontrar la coordenada correcta, la reporta en el log
+COORDENADA CONFIRMADA: el botón ↓ azul del modal está en (1075, 190).
+Identificado por script de diagnóstico que probó grilla sistemática de coordenadas.
+El elemento es: DIV (1075, 192) 30x30 cls=v-button v-widget toolbar-button
 """
 
 import asyncio
@@ -19,7 +26,10 @@ from playwright.async_api import async_playwright
 
 load_dotenv()
 
-LOG_DIR = Path("logs")
+BASE_URL     = "https://www.cenconlineb2b.com/"
+DOWNLOAD_DIR = Path("downloads")
+LOG_DIR      = Path("logs")
+DOWNLOAD_DIR.mkdir(exist_ok=True)
 LOG_DIR.mkdir(exist_ok=True)
 
 log_file = LOG_DIR / f"rpa_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -31,368 +41,434 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
-log = logging.getLogger("Diagnostico")
-
-BASE_URL = "https://www.cenconlineb2b.com/"
+log = logging.getLogger("VentaDiaria")
 
 
 def _es_dashboard(url):
-    return "cenconlineb2b.com" in url and "ssocencosud" not in url and "BBRe-commerce/main" in url
+    return (
+        "cenconlineb2b.com" in url
+        and "ssocencosud" not in url
+        and "BBRe-commerce/main" in url
+    )
 
 
 def _fecha_ayer():
     return (datetime.now() - timedelta(days=1)).strftime("%d-%m-%Y")
 
 
-async def login_y_navegar(page, username, password):
-    """Pasos 1-5: login + Comercial/Ventas + Generar Informe + doble click 1974206."""
-    # Paso 1
-    await page.goto(BASE_URL, wait_until="networkidle", timeout=30000)
-    if not _es_dashboard(page.url):
-        pais = await page.wait_for_selector("select", timeout=10000)
+class VentaDiariaRPA:
+    def __init__(self, username, password, headless=True):
+        self.username = username
+        self.password = password
+        self.headless  = headless
+        self.page      = None
+
+    async def _wait(self, min_ms=500, max_ms=1200):
+        import random
+        await asyncio.sleep(random.uniform(min_ms / 1000, max_ms / 1000))
+
+    async def _screenshot(self, name):
+        path = LOG_DIR / f"{name}_{datetime.now().strftime('%H%M%S')}.png"
+        try:
+            await self.page.screenshot(path=str(path), full_page=True, timeout=8000)
+            log.info(f"Screenshot: {path}")
+        except Exception as e:
+            log.warning(f"Screenshot omitido ({name}): {type(e).__name__}")
+
+    async def _click_vaadin_real(self, texto):
+        coords = await self.page.evaluate(f"""
+            () => {{
+                const spans = document.querySelectorAll('.v-menubar-menuitem-caption');
+                for (const span of spans) {{
+                    if (span.textContent.trim() === '{texto}') {{
+                        const rect = span.parentElement.getBoundingClientRect();
+                        return {{
+                            x: rect.left + rect.width / 2,
+                            y: rect.top + rect.height / 2,
+                            visible: rect.width > 0 && rect.height > 0
+                        }};
+                    }}
+                }}
+                return null;
+            }}
+        """)
+        if not coords or not coords.get("visible"):
+            return False
+        x, y = coords["x"], coords["y"]
+        log.info(f"  Vaadin click '{texto}' @ ({x:.0f}, {y:.0f})")
+        await self.page.mouse.move(x, y)
+        await asyncio.sleep(0.2)
+        await self.page.mouse.click(x, y)
+        return True
+
+    async def step1_select_pais_y_unidad(self):
+        log.info("Paso 1: Chile + Supermercados")
+        await self.page.goto(BASE_URL, wait_until="networkidle", timeout=30000)
+        await self._screenshot("paso1_inicio")
+        if _es_dashboard(self.page.url):
+            log.info("Sesión activa — saltando")
+            return
+        pais = await self.page.wait_for_selector("select", timeout=10000)
         await pais.select_option(label="Chile")
-        await asyncio.sleep(1.5)
-        selects = await page.query_selector_all("select")
+        await self._wait(800, 1200)
+        await self.page.wait_for_timeout(1500)
+        selects = await self.page.query_selector_all("select")
         if len(selects) >= 2:
             await selects[1].select_option(label="Supermercados")
-        btn = await page.wait_for_selector("#btnIngresar", timeout=8000)
+            await self._wait(800, 1200)
+        btn = await self.page.wait_for_selector("#btnIngresar", timeout=8000)
         await btn.click()
-        await page.wait_for_load_state("networkidle", timeout=20000)
+        await self.page.wait_for_load_state("networkidle", timeout=20000)
+        log.info(f"Paso 1 OK | URL: {self.page.url}")
 
-    # Paso 2: login
-    if not _es_dashboard(page.url):
-        await page.wait_for_selector("#kc-login", timeout=10000)
-        await page.evaluate("""
+    async def step2_login(self):
+        log.info("Paso 2: Login")
+        if _es_dashboard(self.page.url):
+            log.info("✅ Sesión activa")
+            return True
+        try:
+            await self.page.wait_for_selector("#kc-login", timeout=10000)
+        except Exception:
+            if _es_dashboard(self.page.url):
+                return True
+            return False
+        await self.page.evaluate("""
             ([u, p]) => {
-                document.getElementById('username').value = u;
-                document.getElementById('username').dispatchEvent(new Event('input', {bubbles:true}));
-                document.getElementById('password').value = p;
-                document.getElementById('password').dispatchEvent(new Event('input', {bubbles:true}));
+                const un = document.getElementById('username');
+                un.value = u;
+                un.dispatchEvent(new Event('input', {bubbles: true}));
+                un.dispatchEvent(new Event('change', {bubbles: true}));
+                const pw = document.getElementById('password');
+                pw.value = p;
+                pw.dispatchEvent(new Event('input', {bubbles: true}));
+                pw.dispatchEvent(new Event('change', {bubbles: true}));
                 document.getElementById('kc-login').click();
             }
-        """, [username, password])
-        for _ in range(60):
+        """, [self.username, self.password])
+        for i in range(60):
             await asyncio.sleep(2)
-            if _es_dashboard(page.url):
-                break
-        await page.wait_for_load_state("networkidle", timeout=30000)
-    log.info(f"✅ Login OK")
-
-    # Paso 3: Comercial → Ventas
-    await asyncio.sleep(3)
-    for ciclo in range(5):
-        menus = await page.query_selector_all('.v-menubar-menuitem-caption')
-        for m in menus:
-            if await m.inner_text() == "Comercial":
-                r = await m.bounding_box()
-                await page.mouse.move(r["x"] + r["width"]/2, r["y"] + r["height"]/2)
-                await asyncio.sleep(0.2)
-                await page.mouse.click(r["x"] + r["width"]/2, r["y"] + r["height"]/2)
-                break
-        await asyncio.sleep(1.5)
-        menus = await page.query_selector_all('.v-menubar-menuitem-caption')
-        for m in menus:
-            if await m.inner_text() == "Ventas":
-                r = await m.bounding_box()
-                await page.mouse.move(r["x"] + r["width"]/2, r["y"] + r["height"]/2)
-                await asyncio.sleep(0.2)
-                await page.mouse.click(r["x"] + r["width"]/2, r["y"] + r["height"]/2)
-                break
-
-        # Esperar "Generar Informe"
-        for _ in range(20):
-            await asyncio.sleep(2)
-            ok = await page.evaluate("""
-                () => [...document.querySelectorAll('*')]
-                    .some(e => e.children.length===0 && e.textContent.trim()==='Generar Informe')
-            """)
-            if ok:
-                log.info("✅ Ventas cargado")
+            url = self.page.url
+            log.info(f"  [{i+1:02d}/60] {url}")
+            if _es_dashboard(url):
                 break
         else:
-            continue
-        break
+            log.error("Timeout login")
+            return False
+        try:
+            await self.page.wait_for_load_state("networkidle", timeout=30000)
+        except Exception:
+            pass
+        log.info(f"✅ Login OK")
+        return True
 
-    # Paso 4: Generar Informe (sin cambiar fecha para ahorrar tiempo)
-    await asyncio.sleep(1)
-    for _ in range(10):
-        await asyncio.sleep(1)
-        coords = await page.evaluate("""
-            () => {
-                for (const el of document.querySelectorAll('*')) {
-                    if (el.children.length===0 && el.textContent.trim()==='Generar Informe') {
-                        const r = el.getBoundingClientRect();
-                        if (r.width > 0) return {x: Math.round(r.left+r.width/2), y: Math.round(r.top+r.height/2)};
-                    }
-                }
-                return null;
-            }
-        """)
-        if coords:
-            await page.mouse.move(coords["x"], coords["y"])
-            await asyncio.sleep(0.3)
-            await page.mouse.click(coords["x"], coords["y"])
-            log.info(f"  Generar Informe @ {coords}")
-            break
-    await asyncio.sleep(5)
+    async def step3_navegar_ventas(self):
+        log.info("Paso 3: Comercial → Ventas")
+        try:
+            await self.page.wait_for_selector(".v-menubar-menuitem-caption", timeout=20000)
+        except Exception:
+            pass
+        await self._wait(2000, 3000)
 
-    # Paso 5: doble click en celda adyacente a 1974206
-    for intento in range(4):
-        coords = await page.evaluate("""
-            () => {
-                for (const sel of ['td','span','div','a']) {
-                    for (const el of document.querySelectorAll(sel)) {
-                        if (el.textContent.trim()==='1974206') {
-                            const r = el.getBoundingClientRect();
-                            if (r.width>0 && r.left>0 && r.top>0) {
-                                const sig = el.nextElementSibling;
-                                const sr = sig ? sig.getBoundingClientRect() : null;
-                                return {
-                                    x: sr ? Math.round(sr.left+sr.width/2) : Math.round(r.right+80),
-                                    y: Math.round(r.top+r.height/2)
-                                };
-                            }
-                        }
-                    }
-                }
-                return null;
-            }
-        """)
-        if not coords:
-            log.warning("Celda 1974206 no encontrada")
-            break
-        await page.mouse.move(coords["x"], coords["y"])
-        await asyncio.sleep(0.2)
-        await page.mouse.dblclick(coords["x"], coords["y"], delay=100)
-        log.info(f"  dblclick [{intento+1}] @ ({coords['x']}, {coords['y']})")
-        await asyncio.sleep(12)
-        n = await page.evaluate("""
-            () => document.querySelectorAll('.v-grid-body .v-grid-cell').length
-        """)
-        log.info(f"  Celdas: {n}")
-        if n > 50:
-            log.info("✅ Modal Detalle de Producto abierto")
-            return True
-        coords = await page.evaluate("""
-            () => {
-                for (const sel of ['td','span','div','a']) {
-                    for (const el of document.querySelectorAll(sel)) {
-                        if (el.textContent.trim()==='1974206') {
-                            const r = el.getBoundingClientRect();
-                            if (r.width>0 && r.left>0 && r.top>0) {
-                                const sig = el.nextElementSibling;
-                                const sr = sig ? sig.getBoundingClientRect() : null;
-                                return {
-                                    x: sr ? Math.round(sr.left+sr.width/2) : Math.round(r.right+80),
-                                    y: Math.round(r.top+r.height/2)
-                                };
-                            }
-                        }
-                    }
-                }
-                return None;
-            }
-        """) or coords
-
-    log.warning("⚠️ Modal no abierto")
-    return False
-
-
-async def probar_coordenadas(page):
-    """
-    Prueba sistemáticamente coordenadas en la zona superior del modal.
-    El modal ocupa todo el ancho. El botón ↓ está en la esquina superior derecha.
-    Probamos una grilla de puntos en x=[900,1280] y=[80,200] cada 20px.
-    """
-    log.info("=" * 60)
-    log.info("INICIO BÚSQUEDA DE BOTÓN ↓")
-    log.info("=" * 60)
-
-    JS_FORMATO_ABIERTO = """
-        () => {
-            for (const el of document.querySelectorAll('*')) {
-                const t = el.textContent.trim();
-                if ((t === 'Formato de Descarga' || t.includes('Seleccione un formato')) &&
-                    el.offsetParent !== null) return true;
-            }
-            return false;
-        }
-    """
-
-    # Tomar screenshot del estado inicial del modal
-    await page.screenshot(
-        path=str(LOG_DIR / "estado_inicial_modal.png"),
-        full_page=True, timeout=8000
-    )
-
-    # Primero: volcar TODOS los elementos en zona y=80-220 con sus coords
-    elementos = await page.evaluate("""
-        () => {
-            const res = [];
-            for (const el of document.querySelectorAll('*')) {
-                const r = el.getBoundingClientRect();
-                const cy = r.top + r.height/2;
-                const cx = r.left + r.width/2;
-                if (cy > 80 && cy < 220 && cx > 800 &&
-                    r.width > 5 && r.width < 300 && r.height > 5) {
-                    res.push({
-                        tag: el.tagName,
-                        cls: el.className.substring(0, 60),
-                        x: Math.round(cx),
-                        y: Math.round(cy),
-                        w: Math.round(r.width),
-                        h: Math.round(r.height),
-                        title: el.title || '',
-                        texto: el.textContent.trim().substring(0, 20)
-                    });
-                }
-            }
-            return res.sort((a,b) => b.x - a.x);
-        }
-    """)
-
-    log.info(f"Elementos en zona x>800, y=80-220 ({len(elementos)} total):")
-    for el in elementos[:30]:
-        log.info(f"  {el['tag']:6} ({el['x']:4},{el['y']:4}) {el['w']}x{el['h']} "
-                 f"cls={el['cls'][:40]:40} title={el['title'][:20]:20} txt={el['texto'][:15]}")
-
-    # Grilla de coordenadas a probar
-    xs = list(range(950, 1281, 25))   # cada 25px en x
-    ys = list(range(85, 200, 15))     # cada 15px en y
-
-    encontrado = None
-    intento = 0
-
-    for y in ys:
-        for x in xs:
-            intento += 1
-            log.info(f"  [{intento:03d}] Probando ({x}, {y})...")
-
-            # Guardar estado del DOM antes del click
-            n_antes = await page.evaluate("""
-                () => document.querySelectorAll('.v-grid-body .v-grid-cell').length
-            """)
-
-            # Click
-            await page.mouse.move(x, y)
-            await asyncio.sleep(0.1)
-            await page.mouse.click(x, y)
+        for ciclo in range(5):
+            log.info(f"  Ciclo {ciclo+1}/5")
+            ok = await self._click_vaadin_real("Comercial")
+            if not ok:
+                await asyncio.sleep(3)
+                continue
             await asyncio.sleep(1.5)
-
-            # Screenshot
-            await page.screenshot(
-                path=str(LOG_DIR / f"intento_{intento:03d}_x{x}_y{y}.png"),
-                full_page=True, timeout=5000
-            )
-
-            # Verificar si abrió modal de formato
-            formato_abierto = await page.evaluate(JS_FORMATO_ABIERTO)
-            n_despues = await page.evaluate("""
-                () => document.querySelectorAll('.v-grid-body .v-grid-cell').length
-            """)
-
-            if formato_abierto:
-                log.info(f"  ✅✅✅ BOTÓN ENCONTRADO @ ({x}, {y}) ✅✅✅")
-                encontrado = (x, y)
-                await page.screenshot(
-                    path=str(LOG_DIR / f"EXITO_x{x}_y{y}.png"),
-                    full_page=True, timeout=8000
-                )
-                return encontrado
-
-            # Si se cerró el modal (menos celdas), reabrirlo
-            if n_despues < 50 and n_antes >= 50:
-                log.warning(f"  ⚠️ Modal cerrado con click en ({x},{y}) — n={n_antes}→{n_despues}")
-                # El modal se cerró — necesitamos volver a abrirlo
-                # Esto es útil info: coords que cierran el modal
-                log.info("  Reintentando doble click para reabrir modal...")
-                # Hacer doble click en 1974206 de nuevo
-                c = await page.evaluate("""
-                    () => {
-                        for (const el of document.querySelectorAll('td,span,div,a')) {
-                            if (el.textContent.trim()==='1974206') {
-                                const r = el.getBoundingClientRect();
-                                if (r.width>0 && r.left>0) {
-                                    const sig = el.nextElementSibling;
-                                    const sr = sig ? sig.getBoundingClientRect() : null;
-                                    return {
-                                        x: sr ? Math.round(sr.left+sr.width/2) : Math.round(r.right+80),
-                                        y: Math.round(r.top+r.height/2)
-                                    };
-                                }
-                            }
-                        }
-                        return null;
-                    }
+            ok = await self._click_vaadin_real("Ventas")
+            if not ok:
+                await asyncio.sleep(3)
+                continue
+            for espera in range(20):
+                await asyncio.sleep(2)
+                ok2 = await self.page.evaluate("""
+                    () => [...document.querySelectorAll('*')]
+                        .some(e => e.children.length===0 &&
+                                   e.textContent.trim()==='Generar Informe')
                 """)
-                if c:
-                    await page.mouse.move(c["x"], c["y"])
-                    await asyncio.sleep(0.2)
-                    await page.mouse.dblclick(c["x"], c["y"], delay=100)
-                    log.info(f"  Esperando 12s para recargar modal...")
-                    await asyncio.sleep(12)
-                    n_check = await page.evaluate("""
-                        () => document.querySelectorAll('.v-grid-body .v-grid-cell').length
-                    """)
-                    log.info(f"  Modal recargado: {n_check} celdas")
-                    if n_check < 50:
-                        log.error("  No se pudo reabrir el modal — abortando búsqueda")
-                        return None
-                # Saltar al siguiente y para no perder más tiempo en esta zona
+                log.info(f"    [{espera+1}/20] Generar Informe={ok2}")
+                if ok2:
+                    log.info("  ✅ Ventas cargado")
+                    break
+            else:
+                continue
+            break
+
+        await self._screenshot("paso3_ventas_cargado")
+        log.info("Paso 3 completado")
+
+    async def step4_setear_fecha_y_generar(self):
+        log.info("Paso 4: Fecha ayer + Generar Informe")
+        fecha = _fecha_ayer()
+        log.info(f"  Fecha: {fecha}")
+        await self._screenshot("paso4_antes")
+
+        # Setear fecha en los campos de texto con formato dd-mm-yyyy
+        import re
+        date_inputs = await self.page.query_selector_all(
+            "input[type='text'], .v-datefield-textfield"
+        )
+        seteados = 0
+        for inp in date_inputs:
+            try:
+                val = await inp.input_value()
+                if val and re.search(r'\d{2}-\d{2}-\d{4}', val):
+                    await inp.click(click_count=3)
+                    await asyncio.sleep(0.1)
+                    await inp.fill(fecha)
+                    await inp.press("Tab")
+                    seteados += 1
+                    log.info(f"  Fecha seteada: '{val}' → '{fecha}'")
+            except Exception as ex:
+                log.warning(f"  Error campo fecha: {ex}")
+        log.info(f"  Campos seteados: {seteados}")
+
+        await self._screenshot("paso4_fecha_seteada")
+        await asyncio.sleep(1)
+
+        # Click Generar Informe
+        for _ in range(10):
+            await asyncio.sleep(1)
+            coords = await self.page.evaluate("""
+                () => {
+                    for (const el of document.querySelectorAll('*')) {
+                        if (el.children.length===0 &&
+                            el.textContent.trim()==='Generar Informe') {
+                            const r = el.getBoundingClientRect();
+                            if (r.width > 0)
+                                return {x: Math.round(r.left+r.width/2),
+                                        y: Math.round(r.top+r.height/2)};
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if coords:
+                log.info(f"  Generar Informe @ ({coords['x']}, {coords['y']})")
+                await self.page.mouse.move(coords["x"], coords["y"])
+                await asyncio.sleep(0.3)
+                await self.page.mouse.click(coords["x"], coords["y"])
                 break
 
-    if not encontrado:
-        log.warning("⚠️ No se encontró el botón en la grilla probada")
-    return encontrado
+        await asyncio.sleep(5)
+        await self._screenshot("paso4_informe_generado")
+        log.info("Paso 4 completado")
 
+    async def step5_dobleclick_1974206(self):
+        log.info("Paso 5: Doble click en 1974206")
+        await self._wait(1000, 2000)
 
-async def main():
-    username = os.getenv("CENC_USER")
-    password = os.getenv("CENC_PASS")
-    headless = os.getenv("HEADLESS", "true").lower() == "true"
+        JS_CELDA = """
+            () => {
+                for (const sel of ['td','span','div','a']) {
+                    for (const el of document.querySelectorAll(sel)) {
+                        if (el.textContent.trim()==='1974206') {
+                            const r = el.getBoundingClientRect();
+                            if (r.width>0 && r.left>0 && r.top>0) {
+                                const sig = el.nextElementSibling;
+                                const sr = sig ? sig.getBoundingClientRect() : null;
+                                return {
+                                    x: sr ? Math.round(sr.left+sr.width/2) : Math.round(r.right+80),
+                                    y: Math.round(r.top+r.height/2)
+                                };
+                            }
+                        }
+                    }
+                }
+                return null;
+            }
+        """
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=headless,
-            args=["--ignore-certificate-errors", "--no-sandbox",
-                  "--disable-blink-features=AutomationControlled",
-                  "--disable-dev-shm-usage"]
-        )
-        context = await browser.new_context(
-            ignore_https_errors=True,
-            viewport={"width": 1280, "height": 720},
-            accept_downloads=True,
-        )
-        context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-        )
-        page = await context.new_page()
+        coords = await self.page.evaluate(JS_CELDA)
+        if not coords:
+            raise Exception("Celda 1974206 no encontrada")
+        log.info(f"  Celda adyacente @ ({coords['x']}, {coords['y']})")
+
+        modal_listo = False
+        for intento in range(4):
+            log.info(f"  dblclick [{intento+1}/4]")
+            await self.page.mouse.move(coords["x"], coords["y"])
+            await asyncio.sleep(0.2)
+            await self.page.mouse.dblclick(coords["x"], coords["y"], delay=100)
+            await self._screenshot(f"paso5_dblclick_{intento+1}")
+            log.info("  Esperando 12s...")
+            await asyncio.sleep(12)
+            estado = await self.page.evaluate("""
+                () => {
+                    const n = document.querySelectorAll('.v-grid-body .v-grid-cell').length;
+                    let modal = false;
+                    for (const el of document.querySelectorAll('*')) {
+                        if (el.textContent.trim()==='Detalle de Producto' &&
+                            el.offsetParent !== null) { modal = true; break; }
+                    }
+                    return {n: n, ok: n > 50 || modal};
+                }
+            """)
+            log.info(f"  Celdas: {estado['n']} — {'✅' if estado['ok'] else '❌'}")
+            if estado["ok"]:
+                modal_listo = True
+                break
+            coords = await self.page.evaluate(JS_CELDA) or coords
+
+        if not modal_listo:
+            log.warning("  ⚠️ Modal no detectado")
+
+        await self._screenshot("paso5_modal_abierto")
+        log.info("Paso 5 completado")
+
+    async def step6_click_boton_descarga(self):
+        """
+        Botón ↓ del modal confirmado en (1075, 190) por script de diagnóstico.
+        Elemento: DIV 30x30 cls=v-button v-widget toolbar-button
+        """
+        log.info("Paso 6: Click en botón ↓ @ (1075, 190) [CONFIRMADO]")
+        await self._screenshot("paso6_antes")
+
+        x, y = 1075, 190
+        await self.page.mouse.move(x, y)
+        await asyncio.sleep(0.3)
+        await self.page.mouse.click(x, y)
+
+        await asyncio.sleep(2)
+        await self._screenshot("paso6_post_click")
+        log.info("Paso 6 completado")
+
+    async def step7_seleccionar_formato(self):
+        log.info("Paso 7: Click SELECCIONAR")
+
+        # Esperar modal Formato de Descarga hasta 8s
+        for i in range(16):
+            await asyncio.sleep(0.5)
+            visible = await self.page.evaluate("""
+                () => {
+                    for (const el of document.querySelectorAll('*')) {
+                        if (el.textContent.trim().includes('Formato de Descarga') &&
+                            el.offsetParent !== null) return true;
+                    }
+                    return false;
+                }
+            """)
+            if visible:
+                log.info(f"  Modal Formato de Descarga visible [{i+1}]")
+                break
+        await self._screenshot("paso7_modal_formato")
+
+        coords = await self.page.evaluate("""
+            () => {
+                for (const el of document.querySelectorAll(
+                    'button, .v-button, .gwt-Button, span, div'
+                )) {
+                    if (el.textContent.trim().toUpperCase() === 'SELECCIONAR') {
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0 && r.left > 0)
+                            return {x: Math.round(r.left+r.width/2),
+                                    y: Math.round(r.top+r.height/2),
+                                    tag: el.tagName};
+                    }
+                }
+                return null;
+            }
+        """)
+
+        if coords:
+            log.info(f"  SELECCIONAR ({coords['tag']}) @ ({coords['x']}, {coords['y']})")
+            await self.page.mouse.move(coords["x"], coords["y"])
+            await asyncio.sleep(0.2)
+            await self.page.mouse.click(coords["x"], coords["y"])
+        else:
+            log.warning("  SELECCIONAR no encontrado — coord fija (230, 511)")
+            await self.page.mouse.move(230, 511)
+            await asyncio.sleep(0.2)
+            await self.page.mouse.click(230, 511)
+
+        log.info("Paso 7 completado")
+
+    async def step8_descargar_archivo(self):
+        log.info("Paso 8: Click en link de descarga")
+
+        link_el = None
+        for espera in range(20):
+            await asyncio.sleep(0.5)
+            link_el = await self.page.query_selector(
+                "a[href*='Ventas'], a[href*='ventas'], a[href*='.zip'], a[href*='.xls']"
+            )
+            if link_el and await link_el.is_visible():
+                texto = (await link_el.inner_text()).strip()
+                log.info(f"  [{espera+1}] Link: '{texto}'")
+                break
+            log.info(f"  [{espera+1}] Esperando link...")
+
+        await self._screenshot("paso8_modal_descarga")
+
+        if not link_el:
+            raise Exception("Link de descarga no encontrado")
 
         try:
-            modal_ok = await login_y_navegar(page, username, password)
-            if not modal_ok:
-                log.error("No se pudo abrir el modal — abortando")
-                return
-
-            resultado = await probar_coordenadas(page)
-            if resultado:
-                log.info(f"\n{'='*60}")
-                log.info(f"RESULTADO: el botón ↓ está en ({resultado[0]}, {resultado[1]})")
-                log.info(f"{'='*60}")
-            else:
-                log.info("No se encontró — revisar screenshots en logs_diag/")
-
+            async with self.page.expect_download(timeout=60000) as dl_info:
+                await link_el.click()
+            download = await dl_info.value
+            dest = DOWNLOAD_DIR / download.suggested_filename
+            await download.save_as(str(dest))
+            log.info(f"  ✅ Descargado: {dest}")
+            await self._screenshot("paso8_descarga_ok")
+            return str(dest)
         except Exception as e:
-            log.error(f"Error: {e}")
+            log.error(f"  Error descarga: {e}")
+            await self._screenshot("error_descarga")
+            return None
+
+    async def run(self):
+        result = {"success": False, "archivo_descargado": None, "error": None}
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=self.headless,
+                args=["--ignore-certificate-errors", "--no-sandbox",
+                      "--disable-blink-features=AutomationControlled",
+                      "--disable-dev-shm-usage"]
+            )
+            context = await browser.new_context(
+                ignore_https_errors=True,
+                viewport={"width": 1280, "height": 720},
+                accept_downloads=True,
+            )
+            context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            )
+            self.page = await context.new_page()
             try:
-                await page.screenshot(
-                    path=str(LOG_DIR / "error.png"), timeout=5000
-                )
-            except Exception:
-                pass
-        finally:
-            await browser.close()
+                await self.step1_select_pais_y_unidad()
+                if not await self.step2_login():
+                    result["error"] = "Login fallido"
+                    return result
+                await self.step3_navegar_ventas()
+                await self.step4_setear_fecha_y_generar()
+                await self.step5_dobleclick_1974206()
+                await self.step6_click_boton_descarga()
+                await self.step7_seleccionar_formato()
+                archivo = await self.step8_descargar_archivo()
+                if archivo:
+                    result["success"] = True
+                    result["archivo_descargado"] = archivo
+                    log.info(f"✅ RPA completado | {archivo}")
+                else:
+                    result["error"] = "Descarga fallida"
+            except Exception as e:
+                log.error(f"Error crítico: {e}")
+                result["error"] = str(e)
+                try:
+                    await self._screenshot("error_critico")
+                except Exception:
+                    pass
+            finally:
+                await browser.close()
+        return result
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    rpa = VentaDiariaRPA(
+        username=os.getenv("CENC_USER"),
+        password=os.getenv("CENC_PASS"),
+        headless=os.getenv("HEADLESS", "true").lower() == "true",
+    )
+    print(asyncio.run(rpa.run()))
