@@ -431,19 +431,68 @@ class VentaDiariaRPA:
 
     async def step6_click_boton_descarga(self):
         """
-        Botón ↓ del modal confirmado en (1075, 190) por script de diagnóstico.
-        Elemento: DIV 30x30 cls=v-button v-widget toolbar-button
+        Click en botón ↓ (1075, 190) del modal → popup con opciones de descarga
+        → click en primera opción del popup (Descargar).
+        El botón ↓ abre un popup Vaadin en overlay — igual que el RPA Inventario.
         """
-        log.info("Paso 6: Click en botón ↓ @ (1075, 190) [CONFIRMADO]")
+        log.info("Paso 6: Click en botón ↓ @ (1075, 190)")
         await self._screenshot("paso6_antes")
 
         x, y = 1075, 190
         await self.page.mouse.move(x, y)
         await asyncio.sleep(0.3)
         await self.page.mouse.click(x, y)
+        await asyncio.sleep(1.5)
+        await self._screenshot("paso6_post_click")
+
+        # Verificar si el modal Formato de Descarga ya apareció directamente
+        formato_directo = await self.page.evaluate("""
+            () => {
+                for (const el of document.querySelectorAll('*')) {
+                    if (el.textContent.trim().includes('Formato de Descarga') &&
+                        el.offsetParent !== null) return true;
+                }
+                return false;
+            }
+        """)
+
+        if formato_directo:
+            log.info("  ✅ Formato de Descarga apareció directamente")
+        else:
+            # El botón abrió un popup — buscar items en overlay y clickear
+            log.info("  Buscando popup de opciones en overlay...")
+            popup_item = await self.page.evaluate("""
+                () => {
+                    const viewW = window.innerWidth;
+                    const viewH = window.innerHeight;
+                    for (const sel of ['td.gwt-MenuItem', '.v-menubar-popup td',
+                                       '.v-contextmenu td', '.v-overlay-container td']) {
+                        for (const el of document.querySelectorAll(sel)) {
+                            if (el.className && el.className.includes('tooltip')) continue;
+                            const r = el.getBoundingClientRect();
+                            const cx = Math.round(r.left + r.width/2);
+                            const cy = Math.round(r.top + r.height/2);
+                            if (r.width > 0 && cx > 0 && cy > 0 && cx < viewW && cy < viewH) {
+                                const t = el.textContent.trim();
+                                if (t.length > 2 && t.length < 80)
+                                    return {x: cx, y: cy, text: t};
+                            }
+                        }
+                    }
+                    return null;
+                }
+            """)
+
+            if popup_item:
+                log.info(f"  Popup item: '{popup_item['text']}' @ ({popup_item['x']}, {popup_item['y']})")
+                await self.page.mouse.move(popup_item["x"], popup_item["y"])
+                await asyncio.sleep(0.3)
+                await self.page.mouse.click(popup_item["x"], popup_item["y"])
+            else:
+                log.warning("  Popup no encontrado — el modal Formato puede venir igual")
 
         await asyncio.sleep(2)
-        await self._screenshot("paso6_post_click")
+        await self._screenshot("paso6_post_popup")
         log.info("Paso 6 completado")
 
     async def step7_seleccionar_formato(self):
