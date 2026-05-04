@@ -281,24 +281,45 @@ class VentaDiariaRPA:
 
         log.info(f"  ✅ Fecha HASTA correcta: {fecha_hasta}")
 
-        # Setear DESDE a ayer usando click en coordenadas + Ctrl+A + type
+        # Setear DESDE a ayer.
+        # Vaadin v-datefield bloquea edición directa via teclado.
+        # Estrategia: usar JS para setear el value del input interno
+        # y disparar los eventos que Vaadin necesita para actualizar su estado.
         if campo_desde:
             x, y = campo_desde["x"], campo_desde["y"]
             log.info(f"  Seteando DESDE '{campo_desde['val']}' → '{fecha_ayer}' @ ({x},{y})")
-            await self.page.mouse.move(x, y)
-            await asyncio.sleep(0.2)
-            await self.page.mouse.click(x, y)
-            await asyncio.sleep(0.3)
-            # Seleccionar todo y escribir fecha
-            await self.page.keyboard.down("Control")
-            await self.page.keyboard.press("a")
-            await self.page.keyboard.up("Control")
-            await asyncio.sleep(0.1)
-            await self.page.keyboard.type(fecha_ayer, delay=50)
-            await self.page.keyboard.press("Enter")
+
+            # Método 1: JS directo en el input del v-datefield
+            seteado = await self.page.evaluate(f"""
+                () => {{
+                    const inputs = document.querySelectorAll('.v-datefield input');
+                    if (inputs.length === 0) return false;
+                    const inp = inputs[0];  // primer campo = DESDE
+                    inp.removeAttribute('readonly');
+                    inp.removeAttribute('disabled');
+                    inp.value = '{fecha_ayer}';
+                    inp.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    inp.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    inp.dispatchEvent(new KeyboardEvent('keyup', {{bubbles: true, key: 'Enter'}}));
+                    inp.blur();
+                    return inp.value;
+                }}
+            """)
+            log.info(f"  JS seteo DESDE resultado: {seteado}")
             await asyncio.sleep(0.5)
-            # Verificar leyendo todos los campos de fecha de nuevo
-            await asyncio.sleep(0.3)
+
+            # Método 2: click + seleccionar todo + escribir (backup)
+            if seteado != fecha_ayer:
+                log.info("  JS no funcionó — intentando click + teclado")
+                await self.page.mouse.click(x, y)
+                await asyncio.sleep(0.3)
+                await self.page.mouse.click(x, y, click_count=3)
+                await asyncio.sleep(0.2)
+                await self.page.keyboard.type(fecha_ayer, delay=80)
+                await self.page.keyboard.press("Tab")
+                await asyncio.sleep(0.5)
+
+            # Verificar
             fechas_post = await self.page.evaluate("""
                 () => {
                     const vals = [];
@@ -310,6 +331,10 @@ class VentaDiariaRPA:
                 }
             """)
             log.info(f"  Fechas tras setear DESDE: {fechas_post}")
+            if fechas_post and fechas_post[0] == fecha_ayer:
+                log.info(f"  ✅ DESDE seteado correctamente")
+            else:
+                log.warning(f"  ⚠️ DESDE puede no haberse seteado: {fechas_post}")
 
         await self._screenshot("paso4_fecha_seteada")
         await asyncio.sleep(1)
@@ -464,10 +489,11 @@ class VentaDiariaRPA:
             await asyncio.sleep(0.2)
             await self.page.mouse.click(coords["x"], coords["y"])
         else:
-            log.warning("  SELECCIONAR no encontrado — coord fija (230, 511)")
-            await self.page.mouse.move(230, 511)
+            # Coordenada confirmada en run exitoso anterior: (575, 449)
+            log.warning("  SELECCIONAR no encontrado — coord fija (575, 449)")
+            await self.page.mouse.move(575, 449)
             await asyncio.sleep(0.2)
-            await self.page.mouse.click(230, 511)
+            await self.page.mouse.click(575, 449)
 
         log.info("Paso 7 completado")
 
