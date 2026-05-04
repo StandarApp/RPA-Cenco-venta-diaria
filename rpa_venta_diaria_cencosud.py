@@ -19,10 +19,10 @@ from playwright.async_api import async_playwright
 
 load_dotenv()
 
-LOG_DIR = Path("logs_diag")
+LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 
-log_file = LOG_DIR / f"diag_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+log_file = LOG_DIR / f"rpa_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
