@@ -199,30 +199,117 @@ class VentaDiariaRPA:
         log.info("Paso 3 completado")
 
     async def step4_setear_fecha_y_generar(self):
-        log.info("Paso 4: Fecha ayer + Generar Informe")
-        fecha = _fecha_ayer()
-        log.info(f"  Fecha: {fecha}")
+        """
+        1. Leer el campo HASTA — si no es ayer, crear fecha_no_disponible.txt y abortar.
+        2. Si es ayer, setear DESDE también a ayer usando el input de texto.
+        3. Click Generar Informe.
+        """
+        log.info("Paso 4: Verificar fecha HASTA y setear DESDE")
+        import re
+        fecha_ayer = _fecha_ayer()
+        log.info(f"  Fecha esperada (ayer): {fecha_ayer}")
         await self._screenshot("paso4_antes")
 
-        # Setear fecha en los campos de texto con formato dd-mm-yyyy
-        import re
-        date_inputs = await self.page.query_selector_all(
-            "input[type='text'], .v-datefield-textfield"
-        )
-        seteados = 0
-        for inp in date_inputs:
-            try:
-                val = await inp.input_value()
-                if val and re.search(r'\d{2}-\d{2}-\d{4}', val):
-                    await inp.click(click_count=3)
-                    await asyncio.sleep(0.1)
-                    await inp.fill(fecha)
-                    await inp.press("Tab")
-                    seteados += 1
-                    log.info(f"  Fecha seteada: '{val}' → '{fecha}'")
-            except Exception as ex:
-                log.warning(f"  Error campo fecha: {ex}")
-        log.info(f"  Campos seteados: {seteados}")
+        # Los campos de fecha en Vaadin son v-datefield — no son inputs HTML
+        # estándar. El valor visible está en el textContent del campo de texto
+        # interno (.v-datefield-textfield). Para escribir hay que hacer click
+        # y usar el teclado (Ctrl+A + type).
+        fechas = await self.page.evaluate("""
+            () => {
+                const campos = [];
+                // v-datefield contiene un input interno con la fecha
+                const inputs = document.querySelectorAll(
+                    '.v-datefield input, .v-datefield-textfield'
+                );
+                for (const inp of inputs) {
+                    const val = inp.value || inp.textContent || '';
+                    const r = inp.getBoundingClientRect();
+                    if (r.width > 0 && val.match(/[0-9]{2}-[0-9]{2}-[0-9]{4}/)) {
+                        campos.push({
+                            val: val.trim(),
+                            x: Math.round(r.left + r.width/2),
+                            y: Math.round(r.top + r.height/2)
+                        });
+                    }
+                }
+                return campos;
+            }
+        """)
+        log.info(f"  Campos v-datefield encontrados: {fechas}")
+
+        # Si no encontró con ese selector, buscar por texto con formato fecha
+        if not fechas:
+            fechas = await self.page.evaluate("""
+                () => {
+                    const campos = [];
+                    for (const el of document.querySelectorAll('input')) {
+                        const val = el.value || '';
+                        if (val.match(/[0-9]{2}-[0-9]{2}-[0-9]{4}/)) {
+                            const r = el.getBoundingClientRect();
+                            if (r.width > 0) {
+                                campos.push({
+                                    val: val.trim(),
+                                    x: Math.round(r.left + r.width/2),
+                                    y: Math.round(r.top + r.height/2)
+                                });
+                            }
+                        }
+                    }
+                    return campos;
+                }
+            """)
+            log.info(f"  Campos input fallback: {fechas}")
+
+        # El panel muestra Desde (primero) y Hasta (segundo)
+        fecha_hasta = fechas[1]["val"] if len(fechas) >= 2 else (fechas[0]["val"] if fechas else "")
+        campo_desde = fechas[0] if fechas else None
+
+        log.info(f"  Fecha HASTA leída: '{fecha_hasta}'")
+        log.info(f"  Fecha ayer esperada: '{fecha_ayer}'")
+
+        # Verificar HASTA
+        if fecha_hasta != fecha_ayer:
+            msg = (f"Fecha no disponible. "
+                   f"La plataforma muestra HASTA={fecha_hasta} "
+                   f"pero se esperaba {fecha_ayer}. "
+                   f"El reporte de ayer aun no esta disponible.")
+            log.warning(f"  ⚠️ {msg}")
+            aviso = DOWNLOAD_DIR / "fecha_no_disponible.txt"
+            aviso.write_text(msg)
+            log.info(f"  Archivo creado: {aviso}")
+            raise Exception(f"FECHA_NO_DISPONIBLE: {msg}")
+
+        log.info(f"  ✅ Fecha HASTA correcta: {fecha_hasta}")
+
+        # Setear DESDE a ayer usando click en coordenadas + Ctrl+A + type
+        if campo_desde:
+            x, y = campo_desde["x"], campo_desde["y"]
+            log.info(f"  Seteando DESDE '{campo_desde['val']}' → '{fecha_ayer}' @ ({x},{y})")
+            await self.page.mouse.move(x, y)
+            await asyncio.sleep(0.2)
+            await self.page.mouse.click(x, y)
+            await asyncio.sleep(0.3)
+            # Seleccionar todo y escribir fecha
+            await self.page.keyboard.key_down("Control")
+            await self.page.keyboard.press("a")
+            await self.page.keyboard.key_up("Control")
+            await asyncio.sleep(0.1)
+            await self.page.keyboard.type(fecha_ayer, delay=50)
+            await self.page.keyboard.press("Enter")
+            await asyncio.sleep(0.5)
+            # Verificar leyendo todos los campos de fecha de nuevo
+            await asyncio.sleep(0.3)
+            fechas_post = await self.page.evaluate("""
+                () => {
+                    const vals = [];
+                    for (const el of document.querySelectorAll('.v-datefield input, input')) {
+                        const v = el.value || '';
+                        if (v.match(/[0-9]{2}-[0-9]{2}-[0-9]{4}/)) vals.push(v);
+                    }
+                    return vals;
+                }
+            """)
+            log.info(f"  Fechas tras setear DESDE: {fechas_post}")
 
         await self._screenshot("paso4_fecha_seteada")
         await asyncio.sleep(1)
@@ -454,12 +541,16 @@ class VentaDiariaRPA:
                 else:
                     result["error"] = "Descarga fallida"
             except Exception as e:
-                log.error(f"Error crítico: {e}")
-                result["error"] = str(e)
-                try:
-                    await self._screenshot("error_critico")
-                except Exception:
-                    pass
+                if "FECHA_NO_DISPONIBLE" in str(e):
+                    log.warning(f"RPA detenido: {e}")
+                    result["error"] = str(e)
+                else:
+                    log.error(f"Error crítico: {e}")
+                    result["error"] = str(e)
+                    try:
+                        await self._screenshot("error_critico")
+                    except Exception:
+                        pass
             finally:
                 await browser.close()
         return result
