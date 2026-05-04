@@ -281,60 +281,92 @@ class VentaDiariaRPA:
 
         log.info(f"  ✅ Fecha HASTA correcta: {fecha_hasta}")
 
-        # Setear DESDE a ayer.
-        # Vaadin v-datefield bloquea edición directa via teclado.
-        # Estrategia: usar JS para setear el value del input interno
-        # y disparar los eventos que Vaadin necesita para actualizar su estado.
-        if campo_desde:
-            x, y = campo_desde["x"], campo_desde["y"]
-            log.info(f"  Seteando DESDE '{campo_desde['val']}' → '{fecha_ayer}' @ ({x},{y})")
+        # Setear DESDE a ayer usando el calendario visual del v-datefield.
+        # 1. Click en el ícono 📅 del campo DESDE para abrir el datepicker
+        # 2. Buscar el día de ayer en el calendario y clickearlo
+        ayer_dt = datetime.now() - timedelta(days=1)
+        dia_ayer = ayer_dt.day        # número del día (ej: 3)
+        mes_ayer = ayer_dt.month      # número del mes  (ej: 5)
+        anio_ayer = ayer_dt.year      # año             (ej: 2026)
+        log.info(f"  Abriendo calendario DESDE para seleccionar día {dia_ayer}/{mes_ayer}/{anio_ayer}")
 
-            # Método 1: JS directo en el input del v-datefield
-            seteado = await self.page.evaluate(f"""
-                () => {{
-                    const inputs = document.querySelectorAll('.v-datefield input');
-                    if (inputs.length === 0) return false;
-                    const inp = inputs[0];  // primer campo = DESDE
-                    inp.removeAttribute('readonly');
-                    inp.removeAttribute('disabled');
-                    inp.value = '{fecha_ayer}';
-                    inp.dispatchEvent(new Event('input', {{bubbles: true}}));
-                    inp.dispatchEvent(new Event('change', {{bubbles: true}}));
-                    inp.dispatchEvent(new KeyboardEvent('keyup', {{bubbles: true, key: 'Enter'}}));
-                    inp.blur();
-                    return inp.value;
+        # Click en el ícono del calendario del campo DESDE (primer ícono de calendario)
+        icono_cal = await self.page.evaluate("""
+            () => {
+                // El ícono del calendario es un button o span dentro del v-datefield
+                const campos = document.querySelectorAll('.v-datefield');
+                if (campos.length === 0) return null;
+                const primero = campos[0];  // DESDE = primer v-datefield
+                const btn = primero.querySelector(
+                    'button, .v-datefield-button, [class*="calendar"], [class*="button"]'
+                );
+                if (!btn) return null;
+                const r = btn.getBoundingClientRect();
+                if (r.width > 0)
+                    return {x: Math.round(r.left + r.width/2),
+                            y: Math.round(r.top + r.height/2)};
+                return null;
+            }
+        """)
+
+        if not icono_cal:
+            # Fallback: click en la coordenada del ícono 📅 del DESDE
+            # Del screenshot: ícono está a la izquierda del campo, ~x=91, y=514
+            icono_cal = {"x": 91, "y": 514}
+            log.warning(f"  Ícono calendario no encontrado — coord fija {icono_cal}")
+
+        log.info(f"  Click ícono calendario DESDE @ ({icono_cal['x']}, {icono_cal['y']})")
+        await self.page.mouse.move(icono_cal["x"], icono_cal["y"])
+        await asyncio.sleep(0.3)
+        await self.page.mouse.click(icono_cal["x"], icono_cal["y"])
+        await asyncio.sleep(1.0)
+        await self._screenshot("paso4_calendario_abierto")
+
+        # Buscar el día de ayer en el calendario abierto
+        # Los días son celdas con el número exacto como texto
+        dia_clickeado = await self.page.evaluate(f"""
+            () => {{
+                const dia = {dia_ayer};
+                // Buscar en el datepicker abierto — puede ser .v-datefield-calendarpanel
+                // o un overlay. Los días son td, span o div con el número exacto.
+                const selectores = [
+                    '.v-datefield-calendarpanel td',
+                    '.v-datefield-calendarpanel span',
+                    '.v-overlay-container td',
+                    '.v-overlay-container span',
+                    '.v-popup td',
+                    '.v-popup span',
+                ];
+                for (const sel of selectores) {{
+                    for (const el of document.querySelectorAll(sel)) {{
+                        if (el.textContent.trim() === String(dia)) {{
+                            const r = el.getBoundingClientRect();
+                            if (r.width > 0 && r.height > 0 && r.top > 0) {{
+                                return {{
+                                    x: Math.round(r.left + r.width/2),
+                                    y: Math.round(r.top + r.height/2),
+                                    text: el.textContent.trim(),
+                                    cls: el.className
+                                }};
+                            }}
+                        }}
+                    }}
                 }}
-            """)
-            log.info(f"  JS seteo DESDE resultado: {seteado}")
+                return null;
+            }}
+        """)
+
+        if dia_clickeado:
+            log.info(f"  Día {dia_ayer} encontrado @ ({dia_clickeado['x']}, {dia_clickeado['y']})")
+            await self.page.mouse.move(dia_clickeado["x"], dia_clickeado["y"])
+            await asyncio.sleep(0.2)
+            await self.page.mouse.click(dia_clickeado["x"], dia_clickeado["y"])
             await asyncio.sleep(0.5)
+            log.info(f"  ✅ DESDE seteado a día {dia_ayer} via calendario")
+        else:
+            log.warning(f"  ⚠️ Día {dia_ayer} no encontrado en calendario — DESDE sin cambios")
 
-            # Método 2: click + seleccionar todo + escribir (backup)
-            if seteado != fecha_ayer:
-                log.info("  JS no funcionó — intentando click + teclado")
-                await self.page.mouse.click(x, y)
-                await asyncio.sleep(0.3)
-                await self.page.mouse.click(x, y, click_count=3)
-                await asyncio.sleep(0.2)
-                await self.page.keyboard.type(fecha_ayer, delay=80)
-                await self.page.keyboard.press("Tab")
-                await asyncio.sleep(0.5)
-
-            # Verificar
-            fechas_post = await self.page.evaluate("""
-                () => {
-                    const vals = [];
-                    for (const el of document.querySelectorAll('.v-datefield input, input')) {
-                        const v = el.value || '';
-                        if (v.match(/[0-9]{2}-[0-9]{2}-[0-9]{4}/)) vals.push(v);
-                    }
-                    return vals;
-                }
-            """)
-            log.info(f"  Fechas tras setear DESDE: {fechas_post}")
-            if fechas_post and fechas_post[0] == fecha_ayer:
-                log.info(f"  ✅ DESDE seteado correctamente")
-            else:
-                log.warning(f"  ⚠️ DESDE puede no haberse seteado: {fechas_post}")
+        await self._screenshot("paso4_fecha_seteada_calendario")
 
         await self._screenshot("paso4_fecha_seteada")
         await asyncio.sleep(1)
