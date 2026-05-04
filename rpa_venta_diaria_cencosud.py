@@ -392,32 +392,57 @@ class VentaDiariaRPA:
         log.info("Paso 6: Click en botón ↓ del modal")
         await self._screenshot("paso6_antes")
 
+        # Buscar el boton azul ↓ del modal de ventas.
+        # El modal ocupa casi todo el viewport. El boton esta en la fila del
+        # campo "Detalle para:" alineado a la derecha, antes del "..."
+        # Confirmado por screenshot: esta en ~(1471, 139) en imagen 1536px
+        # escalado a viewport 1280px: x≈1227, y≈130. Pero el modal puede
+        # variar. Buscamos el bbr-popupbutton o v-button con x mas alto
+        # dentro del modal (excluyendo botones de ayuda y cierre).
         coords = await self.page.evaluate("""
             () => {
-                for (const el of document.querySelectorAll('input, .v-textfield')) {
-                    const v = el.value || '';
-                    if (v.length > 10) {
-                        const r = el.getBoundingClientRect();
-                        if (r.width > 100 && r.top > 50 && r.top < 400) {
-                            return {
-                                x: Math.round(r.right + 229),
-                                y: Math.round(r.top + r.height / 2),
-                                right: Math.round(r.right),
-                                source: 'input'
-                            };
-                        }
+                const vW = window.innerWidth;
+                // Buscar todos los botones visibles en zona y=100-300
+                const candidatos = [];
+                for (const el of document.querySelectorAll(
+                    '.bbr-popupbutton, .v-button, button'
+                )) {
+                    const cls = el.className || '';
+                    if (cls.includes('help') || cls.includes('close')) continue;
+                    const r = el.getBoundingClientRect();
+                    const cx = Math.round(r.left + r.width / 2);
+                    const cy = Math.round(r.top + r.height / 2);
+                    if (r.width > 5 && r.height > 5 &&
+                        cx > vW * 0.7 && cy > 80 && cy < 300) {
+                        candidatos.push({x: cx, y: cy,
+                            cls: cls.substring(0, 50)});
                     }
                 }
-                return {x: 1277, y: 160, source: 'hardcoded'};
+                // Ordenar por y asc (el boton del modal esta mas arriba)
+                // luego por x desc (mas a la derecha)
+                candidatos.sort((a, b) => a.y - b.y || b.x - a.x);
+                // Loguear todos
+                return {
+                    elegido: candidatos[0] || null,
+                    todos: candidatos.map(b =>
+                        '(' + b.x + ',' + b.y + ' ' + b.cls.split(' ')[0] + ')'
+                    ).join(' | ')
+                };
             }
         """)
 
-        x, y = coords["x"], coords["y"]
-        if y < 200:
-            log.warning(f"  y={y} parece header — usando y=220")
-            y = 220
+        log.info(f"  Botones zona modal: {coords.get('todos', 'ninguno')}")
+        btn = coords.get("elegido") if coords else None
 
-        log.info(f"  Botón ↓ @ ({x}, {y}) source={coords['source']}")
+        if btn and btn["x"] <= 1280:
+            x, y = btn["x"], btn["y"]
+            log.info(f"  → Botón ↓ @ ({x}, {y}) cls={btn['cls'][:40]}")
+        else:
+            # Fallback: esquina superior derecha del modal
+            # Del screenshot: boton en x≈1471/1536*1280≈1227, y≈139/816*720≈123
+            x, y = 1227, 140
+            log.warning(f"  Usando coord fallback ({x}, {y})")
+
         await self.page.mouse.move(x, y)
         await asyncio.sleep(0.3)
         await self.page.mouse.click(x, y)
