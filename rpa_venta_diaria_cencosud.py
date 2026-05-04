@@ -255,13 +255,14 @@ class VentaDiariaRPA:
                 'input[type="text"], .v-datefield-textfield'
             )
             seteados = 0
+            import re
             for inp in date_inputs:
                 try:
                     val = await inp.input_value()
-                    import re
                     if re.search(r'\d{2}-\d{2}-\d{4}', val or ''):
-                        await inp.triple_click()
-                        await inp.type(fecha_ayer, delay=50)
+                        await inp.click(click_count=3)  # seleccionar todo
+                        await asyncio.sleep(0.1)
+                        await inp.fill(fecha_ayer)
                         await inp.press("Tab")
                         seteados += 1
                         log.info(f"  Campo fecha seteado: '{val}' → '{fecha_ayer}'")
@@ -336,7 +337,17 @@ class VentaDiariaRPA:
         JS_MODAL_OK = """
             () => {
                 const n = document.querySelectorAll('.v-grid-body .v-grid-cell').length;
-                return {ok: n > 20, n: n};
+                // Tabla de ventas base tiene ~9 celdas. El modal de detalle tiene muchas más.
+                // También detectar por el titulo del modal 'Detalle de Producto'
+                let tieneModal = false;
+                for (const el of document.querySelectorAll('*')) {
+                    const t = el.textContent.trim();
+                    if (t === 'Detalle de Producto' && el.offsetParent !== null) {
+                        tieneModal = true;
+                        break;
+                    }
+                }
+                return {ok: n > 50 || tieneModal, n: n, tieneModal: tieneModal};
             }
         """
 
