@@ -442,57 +442,29 @@ class VentaDiariaRPA:
         await self.page.mouse.move(x, y)
         await asyncio.sleep(0.3)
         await self.page.mouse.click(x, y)
-        await asyncio.sleep(1.5)
-        await self._screenshot("paso6_post_click")
-
-        # Verificar si el modal Formato de Descarga ya apareció directamente
-        formato_directo = await self.page.evaluate("""
-            () => {
-                for (const el of document.querySelectorAll('*')) {
-                    if (el.textContent.trim().includes('Formato de Descarga') &&
-                        el.offsetParent !== null) return true;
-                }
-                return false;
-            }
-        """)
-
-        if formato_directo:
-            log.info("  ✅ Formato de Descarga apareció directamente")
-        else:
-            # El botón abrió un popup — buscar items en overlay y clickear
-            log.info("  Buscando popup de opciones en overlay...")
-            popup_item = await self.page.evaluate("""
+        # Esperar hasta 8s que aparezca el modal "Formato de Descarga"
+        # El botón ↓ lo abre directamente sin popup intermedio
+        formato_ok = False
+        for i in range(16):
+            await asyncio.sleep(0.5)
+            await self._screenshot(f"paso6_espera_{i+1}")
+            formato_ok = await self.page.evaluate("""
                 () => {
-                    const viewW = window.innerWidth;
-                    const viewH = window.innerHeight;
-                    for (const sel of ['td.gwt-MenuItem', '.v-menubar-popup td',
-                                       '.v-contextmenu td', '.v-overlay-container td']) {
-                        for (const el of document.querySelectorAll(sel)) {
-                            if (el.className && el.className.includes('tooltip')) continue;
-                            const r = el.getBoundingClientRect();
-                            const cx = Math.round(r.left + r.width/2);
-                            const cy = Math.round(r.top + r.height/2);
-                            if (r.width > 0 && cx > 0 && cy > 0 && cx < viewW && cy < viewH) {
-                                const t = el.textContent.trim();
-                                if (t.length > 2 && t.length < 80)
-                                    return {x: cx, y: cy, text: t};
-                            }
-                        }
+                    for (const el of document.querySelectorAll('*')) {
+                        if (el.textContent.trim().includes('Formato de Descarga') &&
+                            el.offsetParent !== null) return true;
                     }
-                    return null;
+                    return false;
                 }
             """)
+            if formato_ok:
+                log.info(f"  ✅ Formato de Descarga visible [{i+1}]")
+                break
+            log.info(f"  [{i+1}/16] Esperando Formato de Descarga...")
 
-            if popup_item:
-                log.info(f"  Popup item: '{popup_item['text']}' @ ({popup_item['x']}, {popup_item['y']})")
-                await self.page.mouse.move(popup_item["x"], popup_item["y"])
-                await asyncio.sleep(0.3)
-                await self.page.mouse.click(popup_item["x"], popup_item["y"])
-            else:
-                log.warning("  Popup no encontrado — el modal Formato puede venir igual")
+        if not formato_ok:
+            log.warning("  Formato de Descarga no apareció tras 8s")
 
-        await asyncio.sleep(2)
-        await self._screenshot("paso6_post_popup")
         log.info("Paso 6 completado")
 
     async def step7_seleccionar_formato(self):
