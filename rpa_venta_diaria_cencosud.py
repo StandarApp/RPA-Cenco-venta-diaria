@@ -486,7 +486,8 @@ class VentaDiariaRPA:
                     if (r.width > 0 && cy > 80 && cy < 205 && cx > 0 && cx < vW)
                         candidatos.push({x: cx, y: cy, cls: cls.substring(0,50)});
                 }
-                candidatos.sort((a,b) => a.y - b.y || b.x - a.x);
+                // Ordenar por y asc, luego x ASC — el ↓ azul tiene x menor que el naranja
+                candidatos.sort((a,b) => a.y - b.y || a.x - b.x);
                 return {todos: candidatos, elegido: candidatos[0] || null};
             }
         """)
