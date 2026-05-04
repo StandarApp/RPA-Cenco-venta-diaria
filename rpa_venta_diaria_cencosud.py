@@ -290,9 +290,9 @@ class VentaDiariaRPA:
             await self.page.mouse.click(x, y)
             await asyncio.sleep(0.3)
             # Seleccionar todo y escribir fecha
-            await self.page.keyboard.key_down("Control")
+            await self.page.keyboard.down("Control")
             await self.page.keyboard.press("a")
-            await self.page.keyboard.key_up("Control")
+            await self.page.keyboard.up("Control")
             await asyncio.sleep(0.1)
             await self.page.keyboard.type(fecha_ayer, delay=50)
             await self.page.keyboard.press("Enter")
