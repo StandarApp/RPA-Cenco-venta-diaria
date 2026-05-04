@@ -430,7 +430,7 @@ class VentaDiariaRPA:
         log.info(f"  Celda adyacente @ ({coords['x']}, {coords['y']})")
 
         modal_listo = False
-        for intento in range(4):
+        for intento in range(6):
             log.info(f"  dblclick [{intento+1}/4]")
             await self.page.mouse.move(coords["x"], coords["y"])
             await asyncio.sleep(0.2)
@@ -482,7 +482,8 @@ class VentaDiariaRPA:
                     const r = el.getBoundingClientRect();
                     const cx = Math.round(r.left + r.width/2);
                     const cy = Math.round(r.top + r.height/2);
-                    if (r.width > 0 && cy > 80 && cy < 250 && cx > 0 && cx < vW)
+                    // Modal buttons are at y<205; main bar at y~215
+                    if (r.width > 0 && cy > 80 && cy < 205 && cx > 0 && cx < vW)
                         candidatos.push({x: cx, y: cy, cls: cls.substring(0,50)});
                 }
                 candidatos.sort((a,b) => a.y - b.y || b.x - a.x);
@@ -496,8 +497,10 @@ class VentaDiariaRPA:
             x, y = elegido["x"], elegido["y"]
             log.info(f"  → Click @ ({x}, {y})")
         else:
-            x, y = 1075, 192
-            log.warning(f"  No encontrado — coord fija ({x}, {y})")
+            log.warning("  ⚠️ No hay botones en zona del modal (y<205) — modal no abierto, abortando paso 6")
+            await self._screenshot("paso6_sin_modal")
+            log.info("Paso 6 completado (sin acción)")
+            return
 
         await self.page.mouse.move(x, y)
         await asyncio.sleep(0.3)
