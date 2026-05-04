@@ -463,40 +463,82 @@ class VentaDiariaRPA:
 
     async def step6_click_boton_descarga(self):
         """
-        Click en botón ↓ (1075, 190) del modal → popup con opciones de descarga
-        → click en primera opción del popup (Descargar).
-        El botón ↓ abre un popup Vaadin en overlay — igual que el RPA Inventario.
+        Encuentra el botón ↓ del modal por DOM y lo clickea.
+        Loguea todos los candidatos para diagnóstico.
+        Luego espera Formato de Descarga o popup de opciones.
         """
-        log.info("Paso 6: Click en botón ↓ @ (1075, 190)")
+        log.info("Paso 6: Buscando y clickeando botón ↓ del modal")
         await self._screenshot("paso6_antes")
 
-        x, y = 1075, 190
+        # Buscar toolbar-button dentro del modal (excluir help/close)
+        btn = await self.page.evaluate("""
+            () => {
+                const vW = window.innerWidth;
+                const candidatos = [];
+                for (const el of document.querySelectorAll('.v-button, button')) {
+                    const cls = el.className || '';
+                    if (cls.includes('help') || cls.includes('close')) continue;
+                    if (!cls.includes('toolbar') && !cls.includes('bbr')) continue;
+                    const r = el.getBoundingClientRect();
+                    const cx = Math.round(r.left + r.width/2);
+                    const cy = Math.round(r.top + r.height/2);
+                    if (r.width > 0 && cy > 80 && cy < 250 && cx > 0 && cx < vW)
+                        candidatos.push({x: cx, y: cy, cls: cls.substring(0,50)});
+                }
+                candidatos.sort((a,b) => a.y - b.y || b.x - a.x);
+                return {todos: candidatos, elegido: candidatos[0] || null};
+            }
+        """)
+        log.info(f"  Candidatos: {btn.get('todos', [])[:6]}")
+
+        elegido = btn.get("elegido") if btn else None
+        if elegido:
+            x, y = elegido["x"], elegido["y"]
+            log.info(f"  → Click @ ({x}, {y})")
+        else:
+            x, y = 1075, 192
+            log.warning(f"  No encontrado — coord fija ({x}, {y})")
+
         await self.page.mouse.move(x, y)
         await asyncio.sleep(0.3)
         await self.page.mouse.click(x, y)
-        # Esperar hasta 8s que aparezca el modal "Formato de Descarga"
-        # El botón ↓ lo abre directamente sin popup intermedio
-        formato_ok = False
+        await asyncio.sleep(1.0)
+        await self._screenshot("paso6_post_click")
+
+        # Esperar Formato de Descarga o popup
         for i in range(16):
             await asyncio.sleep(0.5)
-            await self._screenshot(f"paso6_espera_{i+1}")
-            formato_ok = await self.page.evaluate("""
+            estado = await self.page.evaluate("""
                 () => {
                     for (const el of document.querySelectorAll('*')) {
                         if (el.textContent.trim().includes('Formato de Descarga') &&
-                            el.offsetParent !== null) return true;
+                            el.offsetParent !== null) return {tipo: 'formato'};
                     }
-                    return false;
+                    for (const sel of ['td.gwt-MenuItem', '.v-menubar-popup td',
+                                       '.v-contextmenu td']) {
+                        for (const el of document.querySelectorAll(sel)) {
+                            const r = el.getBoundingClientRect();
+                            if (r.width > 0 && r.top > 0)
+                                return {tipo: 'popup', text: el.textContent.trim(),
+                                        x: Math.round(r.left+r.width/2),
+                                        y: Math.round(r.top+r.height/2)};
+                        }
+                    }
+                    return {tipo: 'ninguno'};
                 }
             """)
-            if formato_ok:
-                log.info(f"  ✅ Formato de Descarga visible [{i+1}]")
+            log.info(f"  [{i+1}/16] {estado}")
+            if estado['tipo'] == 'formato':
+                log.info("  ✅ Formato de Descarga visible")
                 break
-            log.info(f"  [{i+1}/16] Esperando Formato de Descarga...")
+            elif estado['tipo'] == 'popup':
+                log.info(f"  Popup: '{estado['text']}' @ ({estado['x']},{estado['y']})")
+                await self.page.mouse.move(estado["x"], estado["y"])
+                await asyncio.sleep(0.3)
+                await self.page.mouse.click(estado["x"], estado["y"])
+                break
 
-        if not formato_ok:
-            log.warning("  Formato de Descarga no apareció tras 8s")
-
+        await self._screenshot("paso6_final")
         log.info("Paso 6 completado")
 
     async def step7_seleccionar_formato(self):
