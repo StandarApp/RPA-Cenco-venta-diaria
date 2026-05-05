@@ -416,12 +416,17 @@ class VentaDiariaRPA:
 
         log.info(f"  ✅ Fecha HASTA correcta: {fecha_hasta}")
 
+        # Usar la misma fecha que _fecha_ayer() — respeta FORCE_DATE si está activo
+        fecha_ayer_str = _fecha_ayer()  # DD-MM-YYYY
         try:
-            import zoneinfo
-            tz_chile = zoneinfo.ZoneInfo("America/Santiago")
-            ayer_dt = datetime.now(tz_chile) - timedelta(days=1)
+            ayer_dt = datetime.strptime(fecha_ayer_str, "%d-%m-%Y")
         except Exception:
-            ayer_dt = datetime.utcnow() - timedelta(hours=4) - timedelta(days=1)
+            try:
+                import zoneinfo
+                tz_chile = zoneinfo.ZoneInfo("America/Santiago")
+                ayer_dt = datetime.now(tz_chile) - timedelta(days=1)
+            except Exception:
+                ayer_dt = datetime.utcnow() - timedelta(hours=4) - timedelta(days=1)
         dia_ayer  = ayer_dt.day
         mes_ayer  = ayer_dt.month
         anio_ayer = ayer_dt.year
