@@ -477,8 +477,7 @@ class VentaDiariaRPA:
 
     async def step6_click_boton_descarga(self):
         """
-        Click en botón ↓ del modal. Prueba coordenadas en zona confirmada
-        hasta encontrar la que abre Formato de Descarga.
+        Click en botón ↓ del modal. Prueba click normal y JS dispatch.
         """
         log.info("Paso 6: Click en botón ↓ del modal")
         await self._screenshot("paso6_antes")
@@ -493,29 +492,119 @@ class VentaDiariaRPA:
             }
         """
 
-        # Probar coordenadas en zona del botón azul ↓
-        # Confirmado visualmente en (1075, 192) y por diagnóstico en (1064, 180)
         candidatos = [
             (1075, 192), (1064, 180), (1070, 185), (1070, 192),
             (1080, 192), (1060, 192), (1075, 185), (1075, 180),
-            (1065, 192), (1085, 192), (1075, 195), (1075, 188),
         ]
 
         for x, y in candidatos:
-            log.info(f"  Probando ({x}, {y})...")
+            # Método 1: click normal
+            log.info(f"  Click normal ({x}, {y})...")
             await self.page.mouse.move(x, y)
             await asyncio.sleep(0.2)
             await self.page.mouse.click(x, y)
-            await asyncio.sleep(1.5)
-
-            ok = await self.page.evaluate(JS_FORMATO)
-            if ok:
-                log.info(f"  ✅ Formato de Descarga @ ({x}, {y})")
+            await asyncio.sleep(1.2)
+            if await self.page.evaluate(JS_FORMATO):
+                log.info(f"  ✅ Formato de Descarga @ ({x}, {y}) — click normal")
                 break
-            log.info(f"  ({x},{y}) → sin resultado")
+
+            # Método 2: JS dispatch mousedown+mouseup+click
+            log.info(f"  JS dispatch ({x}, {y})...")
+            await self.page.evaluate(f"""
+                () => {{
+                    for (const el of document.elementsFromPoint({x}, {y})) {{
+                        ['mousedown','mouseup','click'].forEach(ev =>
+                            el.dispatchEvent(new MouseEvent(ev,
+                                {{bubbles:true, cancelable:true, clientX:{x}, clientY:{y}}}))
+                        );
+                    }}
+                }}
+            """)
+            await asyncio.sleep(1.2)
+            if await self.page.evaluate(JS_FORMATO):
+                log.info(f"  ✅ Formato de Descarga @ ({x}, {y}) — JS dispatch")
+                break
+
+            log.info(f"  ({x},{y}) sin resultado")
 
         await self._screenshot("paso6_post_click")
         log.info("Paso 6 completado")
+
+    async def step7_seleccionar_formato(self):
+        log.info("Paso 7: Click SELECCIONAR")
+        for i in range(16):
+            await asyncio.sleep(0.5)
+            visible = await self.page.evaluate("""
+                () => {
+                    for (const el of document.querySelectorAll('*')) {
+                        if (el.textContent.trim().includes('Formato de Descarga') &&
+                            el.offsetParent !== null) return true;
+                    }
+                    return false;
+                }
+            """)
+            if visible:
+                log.info(f"  Modal visible [{i+1}]")
+                break
+        await self._screenshot("paso7_modal_formato")
+
+        coords = await self.page.evaluate("""
+            () => {
+                for (const el of document.querySelectorAll(
+                    'button, .v-button, .gwt-Button, span, div'
+                )) {
+                    if (el.textContent.trim().toUpperCase() === 'SELECCIONAR') {
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0 && r.left > 0)
+                            return {x: Math.round(r.left+r.width/2),
+                                    y: Math.round(r.top+r.height/2),
+                                    tag: el.tagName};
+                    }
+                }
+                return null;
+            }
+        """)
+        if coords:
+            log.info(f"  SELECCIONAR @ ({coords['x']}, {coords['y']})")
+            await self.page.mouse.move(coords["x"], coords["y"])
+            await asyncio.sleep(0.2)
+            await self.page.mouse.click(coords["x"], coords["y"])
+        else:
+            log.warning("  SELECCIONAR no encontrado — coord fija (575, 449)")
+            await self.page.mouse.move(575, 449)
+            await asyncio.sleep(0.2)
+            await self.page.mouse.click(575, 449)
+        log.info("Paso 7 completado")
+
+    async def step8_descargar_archivo(self):
+        log.info("Paso 8: Click en link de descarga")
+        link_el = None
+        for espera in range(20):
+            await asyncio.sleep(0.5)
+            link_el = await self.page.query_selector(
+                "a[href*='Ventas'], a[href*='ventas'], a[href*='.zip'], a[href*='.xls']"
+            )
+            if link_el and await link_el.is_visible():
+                texto = (await link_el.inner_text()).strip()
+                log.info(f"  [{espera+1}] Link: '{texto}'")
+                break
+            log.info(f"  [{espera+1}] Esperando link...")
+        await self._screenshot("paso8_modal_descarga")
+        if not link_el:
+            raise Exception("Link de descarga no encontrado")
+        try:
+            async with self.page.expect_download(timeout=60000) as dl_info:
+                await link_el.click()
+            download = await dl_info.value
+            dest = DOWNLOAD_DIR / download.suggested_filename
+            await download.save_as(str(dest))
+            log.info(f"  ✅ Descargado: {dest}")
+            await self._screenshot("paso8_descarga_ok")
+            return str(dest)
+        except Exception as e:
+            log.error(f"  Error descarga: {e}")
+            await self._screenshot("error_descarga")
+            return None
 
     async def run(self):
         result = {"success": False, "archivo_descargado": None, "error": None}
