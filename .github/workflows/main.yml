@@ -13,6 +13,8 @@ on:
     - cron: '30 18 * * *'
     # Intento 5: 4:30 PM Chile = 19:30 UTC
     - cron: '30 19 * * *'
+    # Intento 6: 11:30 PM Chile = 02:30 UTC (dia siguiente)
+    - cron: '30 2 * * *'
   workflow_dispatch:  # permite correrlo manualmente desde GitHub
 
 jobs:
