@@ -606,6 +606,257 @@ class VentaDiariaRPA:
             await self._screenshot("error_descarga")
             return None
 
+    async def step_inv1_navegar_inventario(self):
+        """Abastecimiento → Detalle de Inventario."""
+        log.info("INV Paso 1: Abastecimiento → Detalle de Inventario")
+        await self._wait(2000, 3000)
+
+        for ciclo in range(5):
+            log.info(f"  Ciclo {ciclo+1}/5")
+            ok = await self._click_vaadin_real("Abastecimiento")
+            if not ok:
+                await asyncio.sleep(3)
+                continue
+            await asyncio.sleep(1.5)
+            ok = await self._click_vaadin_real("Detalle de Inventario")
+            if not ok:
+                await asyncio.sleep(3)
+                continue
+
+            for espera in range(20):
+                await asyncio.sleep(2)
+                ok2 = await self.page.evaluate("""
+                    () => [...document.querySelectorAll('*')]
+                        .some(e => e.children.length===0 &&
+                                   e.textContent.trim()==='Generar Informe')
+                """)
+                log.info(f"    [{espera+1}/20] Generar Informe={ok2}")
+                if ok2:
+                    log.info("  ✅ Detalle de Inventario cargado")
+                    break
+            else:
+                continue
+            break
+
+        await self._screenshot("inv_paso1_inventario_cargado")
+        log.info("INV Paso 1 completado")
+
+    async def step_inv2_generar_informe(self):
+        """Click en Generar Informe del panel de inventario."""
+        log.info("INV Paso 2: Generar Informe")
+        for _ in range(10):
+            await asyncio.sleep(1)
+            coords = await self.page.evaluate("""
+                () => {
+                    for (const el of document.querySelectorAll('*')) {
+                        if (el.children.length===0 &&
+                            el.textContent.trim()==='Generar Informe') {
+                            const r = el.getBoundingClientRect();
+                            if (r.width > 0)
+                                return {x: Math.round(r.left+r.width/2),
+                                        y: Math.round(r.top+r.height/2)};
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if coords:
+                log.info(f"  Generar Informe @ ({coords['x']}, {coords['y']})")
+                await self.page.mouse.move(coords["x"], coords["y"])
+                await asyncio.sleep(0.3)
+                await self.page.mouse.click(coords["x"], coords["y"])
+                break
+
+        # Esperar tabla con 1974206
+        for espera in range(30):
+            await asyncio.sleep(2)
+            tiene = await self.page.evaluate("""
+                () => [...document.querySelectorAll('*')]
+                    .some(e => e.textContent.trim()==='1974206')
+            """)
+            log.info(f"  [{espera+1}/30] 1974206 visible={tiene}")
+            if tiene:
+                log.info("  ✅ Tabla con 1974206 cargada")
+                break
+
+        await self._screenshot("inv_paso2_informe_generado")
+        log.info("INV Paso 2 completado")
+
+    async def step_inv3_dobleclick_1974206(self):
+        """Doble click en celda adyacente a 1974206 → modal locales."""
+        log.info("INV Paso 3: Doble click en 1974206")
+        await self._wait(1000, 2000)
+
+        JS_CELDA = """
+            () => {
+                for (const sel of ['td','span','div','a']) {
+                    for (const el of document.querySelectorAll(sel)) {
+                        if (el.textContent.trim()==='1974206') {
+                            const r = el.getBoundingClientRect();
+                            if (r.width>0 && r.left>0 && r.top>0) {
+                                const sig = el.nextElementSibling;
+                                const sr = sig ? sig.getBoundingClientRect() : null;
+                                return {
+                                    x: sr ? Math.round(sr.left+sr.width/2) : Math.round(r.right+80),
+                                    y: Math.round(r.top+r.height/2)
+                                };
+                            }
+                        }
+                    }
+                }
+                return null;
+            }
+        """
+
+        JS_MODAL_OK = """
+            () => {
+                const n = document.querySelectorAll('.v-grid-body .v-grid-cell').length;
+                let modal = false;
+                for (const el of document.querySelectorAll('*')) {
+                    if (el.textContent.trim()==='Detalle de Inventario' &&
+                        el.offsetParent !== null) { modal = true; break; }
+                }
+                return {n: n, ok: n > 20 || modal};
+            }
+        """
+
+        coords = await self.page.evaluate(JS_CELDA)
+        if not coords:
+            raise Exception("Celda 1974206 no encontrada en inventario")
+        log.info(f"  Celda adyacente @ ({coords['x']}, {coords['y']})")
+
+        modal_listo = False
+        for intento in range(6):
+            log.info(f"  dblclick [{intento+1}/6]")
+            await self.page.mouse.move(coords["x"], coords["y"])
+            await asyncio.sleep(0.2)
+            await self.page.mouse.dblclick(coords["x"], coords["y"], delay=100)
+            await self._screenshot(f"inv_paso3_dblclick_{intento+1}")
+            log.info("  Esperando 12s...")
+            await asyncio.sleep(12)
+            estado = await self.page.evaluate(JS_MODAL_OK)
+            log.info(f"  Celdas: {estado['n']} modal={estado['ok']}")
+            if estado["ok"]:
+                modal_listo = True
+                log.info("  ✅ Modal inventario cargado")
+                break
+            coords = await self.page.evaluate(JS_CELDA) or coords
+
+        if not modal_listo:
+            log.warning("  ⚠️ Modal no detectado — continuando igual")
+
+        await self._screenshot("inv_paso3_modal_abierto")
+        log.info("INV Paso 3 completado")
+
+    async def step_inv4_diagnostico_boton(self):
+        """
+        Diagnóstico sistemático del botón ↓ del modal de inventario.
+        Prueba grilla de coordenadas hasta encontrar el que abre
+        Formato de Descarga o el popup con opciones.
+        """
+        log.info("INV Paso 4: Diagnóstico botón ↓ del modal inventario")
+        await self._screenshot("inv_paso4_antes")
+
+        JS_EXITO = """
+            () => {
+                for (const el of document.querySelectorAll('*')) {
+                    if ((el.textContent.trim().includes('Formato de Descarga') ||
+                         el.textContent.trim().includes('Dato Fuente')) &&
+                        el.offsetParent !== null) return true;
+                }
+                for (const sel of ['td.gwt-MenuItem','.v-menubar-popup td','.v-contextmenu td']) {
+                    for (const el of document.querySelectorAll(sel)) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 0 && r.top > 0) return true;
+                    }
+                }
+                return false;
+            }
+        """
+
+        JS_CELDAS = "() => document.querySelectorAll('.v-grid-body .v-grid-cell').length"
+        JS_CELDA_1974206 = """
+            () => {
+                for (const sel of ['td','span','div','a']) {
+                    for (const el of document.querySelectorAll(sel)) {
+                        if (el.textContent.trim()==='1974206') {
+                            const r = el.getBoundingClientRect();
+                            if (r.width>0 && r.left>0 && r.top>0) {
+                                const sig = el.nextElementSibling;
+                                const sr = sig ? sig.getBoundingClientRect() : null;
+                                return {
+                                    x: sr ? Math.round(sr.left+sr.width/2) : Math.round(r.right+80),
+                                    y: Math.round(r.top+r.height/2)
+                                };
+                            }
+                        }
+                    }
+                }
+                return null;
+            }
+        """
+
+        async def reabrir_modal():
+            log.info("  Reabriendo modal inventario...")
+            for _ in range(6):
+                c = await self.page.evaluate(JS_CELDA_1974206)
+                if not c:
+                    await asyncio.sleep(2)
+                    continue
+                await self.page.mouse.move(c["x"], c["y"])
+                await asyncio.sleep(0.2)
+                await self.page.mouse.dblclick(c["x"], c["y"], delay=100)
+                await asyncio.sleep(12)
+                n = await self.page.evaluate(JS_CELDAS)
+                if n > 20:
+                    log.info(f"  Modal reabierto ({n} celdas)")
+                    return True
+            return False
+
+        # Grilla: zona superior derecha del modal de inventario
+        # Similar al modal de ventas — probar x=[1040..1145] y=[165..215]
+        xs = list(range(1040, 1146, 8))
+        ys = list(range(165, 216, 5))
+
+        encontrado = None
+        intento = 0
+        n_antes = await self.page.evaluate(JS_CELDAS)
+
+        for y in ys:
+            for x in xs:
+                intento += 1
+                log.info(f"  [{intento:03d}] Click @ ({x}, {y})")
+
+                await self.page.mouse.move(x, y)
+                await asyncio.sleep(0.1)
+                await self.page.mouse.click(x, y)
+                await asyncio.sleep(1.2)
+
+                await self.page.screenshot(
+                    path=str(LOG_DIR / f"inv_diag_{intento:03d}_x{x}_y{y}.png"),
+                    timeout=5000
+                )
+
+                if await self.page.evaluate(JS_EXITO):
+                    log.info(f"  ✅✅✅ BOTÓN INVENTARIO @ ({x}, {y}) ✅✅✅")
+                    encontrado = (x, y)
+                    await self.page.screenshot(
+                        path=str(LOG_DIR / f"inv_EXITO_x{x}_y{y}.png"), timeout=8000
+                    )
+                    return encontrado
+
+                n_despues = await self.page.evaluate(JS_CELDAS)
+                if n_despues < 20 and n_antes >= 20:
+                    log.warning(f"  Modal cerrado por ({x},{y})")
+                    ok = await reabrir_modal()
+                    if not ok:
+                        return None
+                    n_antes = await self.page.evaluate(JS_CELDAS)
+                    break
+
+        log.warning("Botón inventario no encontrado en grilla")
+        return None
+
     async def run(self):
         result = {"success": False, "archivo_descargado": None, "error": None}
         async with async_playwright() as p:
@@ -636,11 +887,24 @@ class VentaDiariaRPA:
                 await self.step7_seleccionar_formato()
                 archivo = await self.step8_descargar_archivo()
                 if archivo:
-                    result["success"] = True
-                    result["archivo_descargado"] = archivo
-                    log.info(f"✅ RPA completado | {archivo}")
+                    result["archivo_ventas"] = archivo
+                    log.info(f"✅ Ventas descargado | {archivo}")
+                    # Continuar con RPA Inventario
+                    log.info("=" * 50)
+                    log.info("Iniciando RPA Inventario...")
+                    log.info("=" * 50)
+                    await self.step_inv1_navegar_inventario()
+                    await self.step_inv2_generar_informe()
+                    await self.step_inv3_dobleclick_1974206()
+                    coords_inv = await self.step_inv4_diagnostico_boton()
+                    if coords_inv:
+                        log.info(f"✅ Botón inventario encontrado @ {coords_inv}")
+                        result["success"] = True
+                        result["coords_boton_inventario"] = str(coords_inv)
+                    else:
+                        result["error"] = "Botón inventario no encontrado"
                 else:
-                    result["error"] = "Descarga fallida"
+                    result["error"] = "Descarga ventas fallida"
             except Exception as e:
                 if "FECHA_NO_DISPONIBLE" in str(e):
                     log.warning(f"RPA detenido: {e}")
