@@ -34,12 +34,151 @@ FIXES v4 (2026-05-05):
 import asyncio
 import os
 import logging
+import zipfile
 from pathlib import Path
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
+import pandas as pd
+from supabase import create_client
 
 load_dotenv()
+
+# ─────────────────────────────────────────────
+# SUPABASE — cliente y funciones de subida
+# ─────────────────────────────────────────────
+
+def _supabase_client():
+    url = os.environ.get("SUPABASE_URL", "")
+    key = os.environ.get("SUPABASE_KEY", "")
+    if not url or not key:
+        raise ValueError("SUPABASE_URL y SUPABASE_KEY deben estar definidas en las variables de entorno")
+    return create_client(url, key)
+
+
+def _buscar_columna(df, candidatos):
+    cols_lower = {c.strip().lower(): c for c in df.columns}
+    for candidato in candidatos:
+        key = candidato.strip().lower()
+        if key in cols_lower:
+            return cols_lower[key]
+    raise ValueError(
+        f"No se encontro ninguna de las columnas {candidatos} "
+        f"en el DataFrame. Columnas disponibles: {list(df.columns)}"
+    )
+
+
+def _leer_excel_de_zip(zip_path):
+    with zipfile.ZipFile(zip_path) as z:
+        nombres = z.namelist()
+        log.info(f"  Archivos dentro del ZIP: {nombres}")
+        for nombre in nombres:
+            ext = Path(nombre).suffix.lower()
+            if ext in (".xlsx", ".xls", ".csv"):
+                with z.open(nombre) as f:
+                    if ext == ".csv":
+                        import io
+                        raw = f.read()
+                        for sep in (";", ",", "\t"):
+                            try:
+                                df = pd.read_csv(io.BytesIO(raw), sep=sep, thousands=".", decimal=",")
+                                if len(df.columns) > 1:
+                                    return df
+                            except Exception:
+                                pass
+                    else:
+                        return pd.read_excel(f, thousands=".", decimal=",")
+        raise ValueError(f"No se encontro ningun archivo Excel/CSV dentro de {zip_path}")
+
+
+def _limpiar_numero(valor):
+    if pd.isna(valor):
+        return None
+    s = str(valor).strip()
+    s = s.replace("$", "").replace(" ", "")
+    if "," in s and "." in s:
+        s = s.replace(".", "").replace(",", ".")
+    elif "," in s:
+        s = s.replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def subir_inventario(zip_path):
+    log.info("=" * 50)
+    log.info("Subiendo INVENTARIO a Supabase...")
+    log.info("=" * 50)
+    fecha_hoy = datetime.now().strftime("%Y-%m-%d")
+    sb = _supabase_client()
+    df = _leer_excel_de_zip(zip_path)
+    log.info(f"  Filas leidas del Excel: {len(df)}")
+    log.info(f"  Columnas: {list(df.columns)}")
+    col_local  = _buscar_columna(df, ["Local", "ID Local", "cod_local", "sucursal", "Cod. Local", "Codigo Local", "Cod Local"])
+    col_desc   = _buscar_columna(df, ["Nombre Local", "descripcion", "nombre", "Descripcion Local", "Descripcion"])
+    col_stock  = _buscar_columna(df, ["stock_un", "stock", "Inv. Actual(Un)", "Inv. Actual (Un)", "Stock (Un)", "Stock(Un)"])
+    registros = []
+    for _, fila in df.iterrows():
+        stock = _limpiar_numero(fila[col_stock])
+        if stock is None:
+            continue
+        registros.append({
+            "fecha":             fecha_hoy,
+            "cod_local":         str(fila[col_local]).strip(),
+            "descripcion_local": str(fila[col_desc]).strip(),
+            "stock_un":          stock,
+        })
+    if not registros:
+        log.warning("  No hay registros validos para subir a inventarios_cencosud")
+        return
+    log.info(f"  Eliminando registros de fecha {fecha_hoy} en inventarios_cencosud...")
+    sb.table("inventarios_cencosud").delete().eq("fecha", fecha_hoy).execute()
+    log.info(f"  Subiendo {len(registros)} registros a inventarios_cencosud...")
+    chunk = 500
+    for i in range(0, len(registros), chunk):
+        sb.table("inventarios_cencosud").upsert(registros[i:i+chunk]).execute()
+        log.info(f"    Batch {i//chunk + 1}: {min(i+chunk, len(registros))}/{len(registros)}")
+    log.info(f"Inventario subido: {len(registros)} filas en inventarios_cencosud")
+
+
+def subir_ventas(zip_path):
+    log.info("=" * 50)
+    log.info("Subiendo VENTAS a Supabase...")
+    log.info("=" * 50)
+    fecha_hoy = datetime.now().strftime("%Y-%m-%d")
+    sb = _supabase_client()
+    df = _leer_excel_de_zip(zip_path)
+    log.info(f"  Filas leidas del Excel: {len(df)}")
+    log.info(f"  Columnas: {list(df.columns)}")
+    col_local   = _buscar_columna(df, ["Local", "ID Local", "cod_local", "sucursal", "Cod. Local", "Codigo Local", "Cod Local"])
+    col_desc    = _buscar_columna(df, ["Nombre Local", "descripcion", "nombre", "Descripcion Local", "Descripcion"])
+    col_vta_un  = _buscar_columna(df, ["venta periodo(un)", "unidades", "Venta Periodo(Un)", "Vta. Periodo (Un)", "Vta. Periodo(Un)"])
+    col_vta_clp = _buscar_columna(df, ["Ventas", "Monto", "venta periodo publico", "Venta Periodo Publico ($)", "Vta. Periodo Publico ($)"])
+    registros = []
+    for _, fila in df.iterrows():
+        vta_un  = _limpiar_numero(fila[col_vta_un])
+        vta_clp = _limpiar_numero(fila[col_vta_clp])
+        if vta_un is None and vta_clp is None:
+            continue
+        registros.append({
+            "fecha":                     fecha_hoy,
+            "cod_local":                 str(fila[col_local]).strip(),
+            "descripcion_local":         str(fila[col_desc]).strip(),
+            "venta_periodo_un":          vta_un,
+            "venta_periodo_publico_clp": vta_clp,
+        })
+    if not registros:
+        log.warning("  No hay registros validos para subir a ventas_cencosud")
+        return
+    log.info(f"  Eliminando registros de fecha {fecha_hoy} en ventas_cencosud...")
+    sb.table("ventas_cencosud").delete().eq("fecha", fecha_hoy).execute()
+    log.info(f"  Subiendo {len(registros)} registros a ventas_cencosud...")
+    chunk = 500
+    for i in range(0, len(registros), chunk):
+        sb.table("ventas_cencosud").upsert(registros[i:i+chunk]).execute()
+        log.info(f"    Batch {i//chunk + 1}: {min(i+chunk, len(registros))}/{len(registros)}")
+    log.info(f"Ventas subidas: {len(registros)} filas en ventas_cencosud")
 
 BASE_URL     = "https://www.cenconlineb2b.com/"
 DOWNLOAD_DIR = Path("downloads")
@@ -1574,6 +1713,21 @@ class VentaDiariaRPA:
                             log.info(f"✅ Inventario descargado | {archivo_inv}")
                             result["success"] = True
                             result["archivo_inventario"] = archivo_inv
+
+                            # ── Subida a Supabase ──────────────────────────
+                            log.info("=" * 50)
+                            log.info("Iniciando subida a Supabase...")
+                            log.info("=" * 50)
+                            try:
+                                subir_ventas(result["archivo_ventas"])
+                            except Exception as e:
+                                log.error(f"  Error subiendo ventas a Supabase: {e}")
+                                result["error_supabase_ventas"] = str(e)
+                            try:
+                                subir_inventario(archivo_inv)
+                            except Exception as e:
+                                log.error(f"  Error subiendo inventario a Supabase: {e}")
+                                result["error_supabase_inventario"] = str(e)
                         else:
                             result["error"] = "Descarga inventario fallida"
                 else:
