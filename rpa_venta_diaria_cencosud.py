@@ -68,7 +68,17 @@ def _es_dashboard(url):
 
 
 def _fecha_ayer():
-    """Retorna fecha de ayer en hora de Chile (America/Santiago)."""
+    """
+    Retorna fecha de ayer en hora de Chile (America/Santiago).
+    Si la variable de entorno FORCE_DATE está definida (formato DD-MM-YYYY),
+    la usa directamente — útil para pruebas sin esperar que la plataforma
+    actualice los datos del día real.
+    Ejemplo: FORCE_DATE=04-05-2026
+    """
+    force = os.getenv("FORCE_DATE", "").strip()
+    if force:
+        log.info(f"  ⚠️  FORCE_DATE activo: usando '{force}' como fecha de ayer")
+        return force
     try:
         import zoneinfo
         tz_chile = zoneinfo.ZoneInfo("America/Santiago")
