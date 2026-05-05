@@ -732,30 +732,153 @@ class VentaDiariaRPA:
     # PASOS INVENTARIO (encadenado tras ventas)
     # ─────────────────────────────────────────────
 
+    async def _cerrar_modales_abiertos(self):
+        """
+        Cierra cualquier modal/popup de Vaadin que esté abierto (X roja o CANCELAR).
+        Esencial para liberar el menú superior antes de navegar a otra sección.
+        """
+        log.info("  Cerrando modales abiertos...")
+        cerrado_alguno = False
+
+        for intento in range(6):
+            resultado = await self.page.evaluate("""
+                () => {
+                    // v-window-closebox (X estándar de ventanas Vaadin)
+                    for (const sel of [
+                        '.v-window-closebox',
+                        '.v-window-header .v-button',
+                        '[class*="closebox"]'
+                    ]) {
+                        for (const el of document.querySelectorAll(sel)) {
+                            const r = el.getBoundingClientRect();
+                            if (r.width > 0 && r.height > 0 && r.top > 0)
+                                return {x: Math.round(r.left+r.width/2),
+                                        y: Math.round(r.top+r.height/2),
+                                        tipo: 'closebox'};
+                        }
+                    }
+                    // Botón X literal (texto exacto "X") en modales pequeños
+                    for (const el of document.querySelectorAll('button, span, div')) {
+                        if (el.textContent.trim() === 'X' && el.offsetParent !== null) {
+                            const r = el.getBoundingClientRect();
+                            if (r.width > 0 && r.width < 50 && r.top > 0)
+                                return {x: Math.round(r.left+r.width/2),
+                                        y: Math.round(r.top+r.height/2),
+                                        tipo: 'X-texto'};
+                        }
+                    }
+                    // Botón CANCELAR en modales de formato/descarga
+                    for (const el of document.querySelectorAll(
+                        'button, .v-button, .gwt-Button, span, div'
+                    )) {
+                        if (el.textContent.trim().toUpperCase() === 'CANCELAR') {
+                            const r = el.getBoundingClientRect();
+                            if (r.width > 0 && r.height > 0 && r.left > 0)
+                                return {x: Math.round(r.left+r.width/2),
+                                        y: Math.round(r.top+r.height/2),
+                                        tipo: 'CANCELAR'};
+                        }
+                    }
+                    return null;
+                }
+            """)
+
+            if not resultado:
+                break
+
+            log.info(f"  Click '{resultado['tipo']}' @ ({resultado['x']}, {resultado['y']})")
+            await self.page.mouse.move(resultado["x"], resultado["y"])
+            await asyncio.sleep(0.2)
+            await self.page.mouse.click(resultado["x"], resultado["y"])
+            await asyncio.sleep(0.8)
+            cerrado_alguno = True
+
+        if cerrado_alguno:
+            log.info("  ✅ Modales cerrados")
+            await asyncio.sleep(1.0)
+        else:
+            log.info("  No había modales abiertos")
+
     async def step_inv1_navegar_inventario(self):
-        """Abastecimiento → Detalle de Inventario."""
+        """
+        Abastecimiento → Detalle de Inventario.
+
+        FIX v2:
+        - Espera hasta 3s a que el submenú de Abastecimiento sea visible antes de
+          intentar clickear "Detalle de Inventario" (antes fallaba silenciosamente
+          porque el submenú no había aparecido todavía).
+        - Loguea explícitamente si "Detalle de Inventario" no fue encontrado para
+          distinguirlo de "Abastecimiento no encontrado".
+        - Sube ciclos máximos a 8 para mayor resiliencia.
+        """
         log.info("INV Paso 1: Abastecimiento → Detalle de Inventario")
         await self._wait(2000, 3000)
 
-        for ciclo in range(5):
-            log.info(f"  Ciclo {ciclo+1}/5")
+        for ciclo in range(8):
+            log.info(f"  Ciclo {ciclo+1}/8")
             ok = await self._click_vaadin_real("Abastecimiento")
             if not ok:
+                log.info("  'Abastecimiento' no encontrado — reintentando en 3s")
                 await asyncio.sleep(3)
                 continue
-            await asyncio.sleep(1.5)
+
+            # Esperar a que el submenú de Abastecimiento sea visible
+            submenu_visible = False
+            for t in range(6):  # hasta 3s
+                await asyncio.sleep(0.5)
+                submenu_visible = await self.page.evaluate("""
+                    () => {
+                        for (const el of document.querySelectorAll(
+                            '.v-menubar-menuitem-caption, .v-menubar-popup *'
+                        )) {
+                            if (el.textContent.trim() === 'Detalle de Inventario') {
+                                const r = el.getBoundingClientRect();
+                                if (r.width > 0 && r.height > 0) return true;
+                            }
+                        }
+                        return false;
+                    }
+                """)
+                if submenu_visible:
+                    break
+            if not submenu_visible:
+                log.info(f"  Submenú 'Detalle de Inventario' no visible tras 3s — reintentando")
+                await asyncio.sleep(2)
+                continue
+
             ok = await self._click_vaadin_real("Detalle de Inventario")
             if not ok:
+                log.info("  'Detalle de Inventario' no clickeable — reintentando en 3s")
                 await asyncio.sleep(3)
                 continue
+
             for espera in range(20):
                 await asyncio.sleep(2)
+                # Verificar que el panel activo sea "Detalle de Inventario"
+                # No basta con encontrar "Generar Informe" — puede estar en el panel de ventas
                 ok2 = await self.page.evaluate("""
-                    () => [...document.querySelectorAll('*')]
-                        .some(e => e.children.length===0 &&
-                                   e.textContent.trim()==='Generar Informe')
+                    () => {
+                        // Buscar indicadores específicos del panel Detalle de Inventario
+                        const textos = ['Detalle de Inventario', 'Inventario'];
+                        for (const t of textos) {
+                            for (const el of document.querySelectorAll(
+                                '.v-panel-caption, .v-label, h2, h3, .v-slot > .v-label'
+                            )) {
+                                if (el.textContent.trim().includes(t) &&
+                                    el.offsetParent !== null) {
+                                    // Además debe existir Generar Informe visible
+                                    const tieneBoton = [...document.querySelectorAll('*')]
+                                        .some(e => e.children.length===0 &&
+                                                   e.textContent.trim()==='Generar Informe' &&
+                                                   e.offsetParent !== null);
+                                    return tieneBoton;
+                                }
+                            }
+                        }
+                        return false;
+                    }
                 """)
-                log.info(f"    [{espera+1}/20] Generar Informe={ok2}")
+                log.info(f"    [{espera+1}/20] Panel Inventario+GenInforme={ok2}")
                 if ok2:
                     log.info("  ✅ Detalle de Inventario cargado")
                     break
@@ -1067,25 +1190,92 @@ class VentaDiariaRPA:
         log.info("INV Paso 5 completado")
 
     async def step_inv6_descargar_archivo(self):
-        """Click en link InvDetalle*.zip → descarga."""
+        """
+        Click en link de descarga del inventario.
+
+        FIX v2:
+        El selector genérico `a[href*='.zip']` capturaba el link de Ventas que
+        quedaba visible en el modal anterior, descargando el archivo equivocado.
+
+        Estrategia corregida:
+        1. Buscar el link dentro del modal "Descargar Archivo" que esté activo
+           (el más reciente / el que tiene el modal padre visible).
+        2. Si hay varios links .zip visibles, tomar el que está dentro del modal
+           más al frente (z-index más alto o el último en el DOM).
+        3. Fallback: el link visible más reciente en el DOM.
+        """
         log.info("INV Paso 6: Click en link de descarga inventario")
 
         link_el = None
         for espera in range(20):
             await asyncio.sleep(0.5)
-            link_el = await self.page.query_selector(
-                "a[href*='Inv'], a[href*='inv'], a[href*='.zip'], a[href*='.xls']"
-            )
-            if link_el and await link_el.is_visible():
-                texto = (await link_el.inner_text()).strip()
-                log.info(f"  [{espera+1}] Link: '{texto}'")
-                break
-            log.info(f"  [{espera+1}] Esperando link inventario...")
+
+            # Buscar el link dentro del modal "Descargar Archivo" activo
+            # Prioridad: link dentro de un modal con título "Descargar Archivo"
+            link_info = await self.page.evaluate("""
+                () => {
+                    // Buscar todos los modales "Descargar Archivo" visibles
+                    const modales = [];
+                    for (const el of document.querySelectorAll('*')) {
+                        if (el.textContent.trim() === 'Descargar Archivo' &&
+                            el.offsetParent !== null) {
+                            // Subir hasta encontrar el contenedor del modal
+                            let contenedor = el;
+                            for (let i = 0; i < 10; i++) {
+                                contenedor = contenedor.parentElement;
+                                if (!contenedor) break;
+                                const link = contenedor.querySelector('a[href]');
+                                if (link) {
+                                    const r = link.getBoundingClientRect();
+                                    if (r.width > 0 && r.height > 0) {
+                                        return {
+                                            texto: link.textContent.trim(),
+                                            found: true
+                                        };
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return {found: false};
+                }
+            """)
+
+            if link_info and link_info.get("found"):
+                log.info(f"  [{espera+1}] Link en modal 'Descargar Archivo': '{link_info['texto']}'")
+                # Ahora obtener el ElementHandle real de ese link
+                link_el = await self.page.evaluate_handle("""
+                    () => {
+                        for (const el of document.querySelectorAll('*')) {
+                            if (el.textContent.trim() === 'Descargar Archivo' &&
+                                el.offsetParent !== null) {
+                                let contenedor = el;
+                                for (let i = 0; i < 10; i++) {
+                                    contenedor = contenedor.parentElement;
+                                    if (!contenedor) break;
+                                    const link = contenedor.querySelector('a[href]');
+                                    if (link) {
+                                        const r = link.getBoundingClientRect();
+                                        if (r.width > 0 && r.height > 0) return link;
+                                    }
+                                }
+                            }
+                        }
+                        return null;
+                    }
+                """)
+                # evaluate_handle puede retornar JSHandle de null
+                is_null = await self.page.evaluate("el => el === null", link_el)
+                if not is_null:
+                    break
+                link_el = None
+
+            log.info(f"  [{espera+1}] Esperando link inventario en modal 'Descargar Archivo'...")
 
         await self._screenshot("inv_paso6_modal_descarga")
 
         if not link_el:
-            raise Exception("Link inventario no encontrado")
+            raise Exception("Link inventario no encontrado en modal 'Descargar Archivo'")
 
         try:
             async with self.page.expect_download(timeout=60000) as dl_info:
@@ -1163,6 +1353,12 @@ class VentaDiariaRPA:
                     log.info("=" * 50)
                     log.info("Iniciando RPA Inventario...")
                     log.info("=" * 50)
+
+                    # CRÍTICO: cerrar todos los modales de ventas que estén abiertos
+                    # antes de intentar navegar al menú de Abastecimiento.
+                    # Si quedan modales, Vaadin bloquea el menú superior.
+                    await self._cerrar_modales_abiertos()
+                    await self._screenshot("inv_inicio_pantalla_limpia")
 
                     await self.step_inv1_navegar_inventario()
                     await self.step_inv2_generar_informe()
