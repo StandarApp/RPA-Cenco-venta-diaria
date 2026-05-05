@@ -18,6 +18,17 @@ FIXES v2 (2026-05-05):
   - step6: agrega _popup_descarga_visible() como helper unificado
   - step_inv4: misma lógica de detección de conexión perdida
   - run(): si step6 retorna False (modal cerrado), reintenta step5+step6 hasta 3 veces
+
+FIXES v3 (2026-05-05):
+  - _cerrar_modales_abiertos(): prioriza CANCELAR, espera activa post-click, Escape fallback
+  - step_inv1: verifica título del panel (no solo Generar Informe), sube ciclos a 8
+  - step_inv6: busca link dentro del modal Descargar Archivo activo, no por href genérico
+
+FIXES v4 (2026-05-05):
+  - run(): reemplaza _cerrar_modales_abiertos() por reset completo de sesión Vaadin:
+           goto BASE_URL + step2_login() antes de iniciar inventario. Los modales
+           que quedan en estado inconsistente tras pérdida de conexión son inmunes
+           a clicks en el DOM — la única solución real es destruir la sesión del servidor.
 """
 
 import asyncio
@@ -854,22 +865,6 @@ class VentaDiariaRPA:
         log.info("INV Paso 1: Abastecimiento → Detalle de Inventario")
         await self._wait(2000, 3000)
 
-        # Guardia: si aún hay un modal abierto el menú superior estará bloqueado
-        hay_modal = await self.page.evaluate("""
-            () => {
-                for (const sel of ['.v-window', '.v-window-wrap', '.v-dialog']) {
-                    for (const el of document.querySelectorAll(sel)) {
-                        if (el.offsetParent !== null) return true;
-                    }
-                }
-                return false;
-            }
-        """)
-        if hay_modal:
-            log.warning("  ⚠️ Hay modal abierto al iniciar inv1 — intentando cerrar de nuevo")
-            await self._cerrar_modales_abiertos()
-            await asyncio.sleep(1)
-
         for ciclo in range(8):
             log.info(f"  Ciclo {ciclo+1}/8")
             ok = await self._click_vaadin_real("Abastecimiento")
@@ -1410,10 +1405,17 @@ class VentaDiariaRPA:
                     log.info("Iniciando RPA Inventario...")
                     log.info("=" * 50)
 
-                    # CRÍTICO: cerrar todos los modales de ventas que estén abiertos
-                    # antes de intentar navegar al menú de Abastecimiento.
-                    # Si quedan modales, Vaadin bloquea el menú superior.
-                    await self._cerrar_modales_abiertos()
+                    # RESET DE SESIÓN VAADIN antes de inventario.
+                    # Navegar a BASE_URL destruye toda la sesión Vaadin del servidor
+                    # (modales, estado de paneles, cache de datos) y reconstruye
+                    # la aplicación desde cero. Es la única forma 100% confiable
+                    # de limpiar modales que quedaron en estado inconsistente
+                    # tras pérdidas de conexión — ningún click en el DOM los cierra.
+                    log.info("  Reset sesión: goto BASE_URL + nuevo login")
+                    await self.page.goto(BASE_URL, wait_until="networkidle", timeout=30000)
+                    await self._screenshot("inv_reset_goto_base")
+                    if not await self.step2_login():
+                        raise Exception("Login fallido en reset de sesión para inventario")
                     await self._screenshot("inv_inicio_pantalla_limpia")
 
                     await self.step_inv1_navegar_inventario()
