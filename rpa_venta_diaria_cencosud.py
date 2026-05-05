@@ -69,25 +69,40 @@ def _buscar_columna(df, candidatos):
 
 
 def _leer_excel_de_zip(zip_path):
+    import io
     with zipfile.ZipFile(zip_path) as z:
         nombres = z.namelist()
         log.info(f"  Archivos dentro del ZIP: {nombres}")
         for nombre in nombres:
             ext = Path(nombre).suffix.lower()
-            if ext in (".xlsx", ".xls", ".csv"):
-                with z.open(nombre) as f:
-                    if ext == ".csv":
-                        import io
-                        raw = f.read()
-                        for sep in (";", ",", "\t"):
-                            try:
-                                df = pd.read_csv(io.BytesIO(raw), sep=sep, thousands=".", decimal=",")
-                                if len(df.columns) > 1:
-                                    return df
-                            except Exception:
-                                pass
-                    else:
-                        return pd.read_excel(f, thousands=".", decimal=",")
+            if ext not in (".xlsx", ".xls", ".csv"):
+                continue
+            raw = z.read(nombre)
+            if ext == ".csv":
+                # Probar encodings y separadores comunes
+                for encoding in ("utf-8-sig", "latin-1", "utf-8"):
+                    for sep in (";", ",", "\t"):
+                        try:
+                            df = pd.read_csv(
+                                io.BytesIO(raw), sep=sep,
+                                encoding=encoding,
+                                thousands=".", decimal=","
+                            )
+                            if len(df.columns) > 1:
+                                log.info(f"  CSV leido con sep='{sep}' encoding='{encoding}': {len(df)} filas")
+                                return df
+                        except Exception:
+                            pass
+                raise ValueError(f"No se pudo parsear el CSV {nombre} dentro de {zip_path}")
+            elif ext == ".xlsx":
+                df = pd.read_excel(io.BytesIO(raw), engine="openpyxl")
+                log.info(f"  XLSX leido: {len(df)} filas")
+                return df
+            elif ext == ".xls":
+                # .xls requiere xlrd — instalado en el workflow
+                df = pd.read_excel(io.BytesIO(raw), engine="xlrd")
+                log.info(f"  XLS leido: {len(df)} filas")
+                return df
         raise ValueError(f"No se encontro ningun archivo Excel/CSV dentro de {zip_path}")
 
 
