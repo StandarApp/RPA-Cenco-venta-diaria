@@ -19,7 +19,7 @@ jobs:
 
       - name: Instalar dependencias
         run: |
-          pip install playwright python-dotenv pandas openpyxl supabase
+          pip install playwright python-dotenv pandas openpyxl xlrd supabase
           playwright install chromium
           playwright install-deps chromium
 
