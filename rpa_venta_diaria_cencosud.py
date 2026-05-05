@@ -470,160 +470,120 @@ class VentaDiariaRPA:
         await self._screenshot("paso5_modal_abierto")
         log.info("Paso 5 completado")
 
-    async def step6_diagnostico_boton(self):
+    async def step6_click_boton_descarga(self):
         """
-        Prueba sistemáticamente coordenadas en la zona del botón ↓ del modal.
-        Toma screenshot después de cada click y verifica si abrió Formato de Descarga.
+        Click en botón ↓ del modal @ (1064, 180) — CONFIRMADO por diagnóstico.
+        Abre directamente el modal Formato de Descarga.
         """
-        log.info("Paso 6: Diagnóstico sistemático del botón ↓")
-        await self._screenshot("paso6_estado_inicial")
+        log.info("Paso 6: Click en botón ↓ @ (1064, 180) [CONFIRMADO]")
+        await self._screenshot("paso6_antes")
 
-        # Volcar todos los elementos en zona y=80-220, x>900 para diagnóstico
-        elementos = await self.page.evaluate("""
+        await self.page.mouse.move(1064, 180)
+        await asyncio.sleep(0.3)
+        await self.page.mouse.click(1064, 180)
+
+        # Esperar modal Formato de Descarga hasta 8s
+        for i in range(16):
+            await asyncio.sleep(0.5)
+            ok = await self.page.evaluate("""
+                () => {
+                    for (const el of document.querySelectorAll('*')) {
+                        if (el.textContent.trim().includes('Formato de Descarga') &&
+                            el.offsetParent !== null) return true;
+                    }
+                    return false;
+                }
+            """)
+            if ok:
+                log.info(f"  ✅ Formato de Descarga visible [{i+1}]")
+                break
+            log.info(f"  [{i+1}/16] Esperando Formato de Descarga...")
+
+        await self._screenshot("paso6_post_click")
+        log.info("Paso 6 completado")
+
+    async def step7_seleccionar_formato(self):
+        log.info("Paso 7: Click SELECCIONAR")
+
+        for i in range(16):
+            await asyncio.sleep(0.5)
+            visible = await self.page.evaluate("""
+                () => {
+                    for (const el of document.querySelectorAll('*')) {
+                        if (el.textContent.trim().includes('Formato de Descarga') &&
+                            el.offsetParent !== null) return true;
+                    }
+                    return false;
+                }
+            """)
+            if visible:
+                log.info(f"  Modal visible [{i+1}]")
+                break
+        await self._screenshot("paso7_modal_formato")
+
+        coords = await self.page.evaluate("""
             () => {
-                const res = [];
-                for (const el of document.querySelectorAll('*')) {
-                    const r = el.getBoundingClientRect();
-                    const cy = r.top + r.height/2;
-                    const cx = r.left + r.width/2;
-                    if (cy > 80 && cy < 220 && cx > 900 &&
-                        r.width > 3 && r.width < 200 && r.height > 3) {
-                        res.push({
-                            tag: el.tagName,
-                            cls: el.className.substring(0, 60),
-                            x: Math.round(cx), y: Math.round(cy),
-                            w: Math.round(r.width), h: Math.round(r.height),
-                            title: el.title || ''
-                        });
+                for (const el of document.querySelectorAll(
+                    'button, .v-button, .gwt-Button, span, div'
+                )) {
+                    if (el.textContent.trim().toUpperCase() === 'SELECCIONAR') {
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0 && r.left > 0)
+                            return {x: Math.round(r.left+r.width/2),
+                                    y: Math.round(r.top+r.height/2),
+                                    tag: el.tagName};
                     }
                 }
-                return res.sort((a,b) => b.x - a.x).slice(0, 30);
+                return null;
             }
         """)
-        log.info(f"Elementos zona modal derecha ({len(elementos)}):")
-        for el in elementos:
-            log.info(f"  {el['tag']:5} ({el['x']:4},{el['y']:3}) {el['w']}x{el['h']} "
-                     f"cls={el['cls'][:50]} title={el['title'][:20]}")
 
-        JS_FORMATO = """
-            () => {
-                for (const el of document.querySelectorAll('*')) {
-                    if (el.textContent.trim().includes('Formato de Descarga') &&
-                        el.offsetParent !== null) return true;
-                }
-                return false;
-            }
-        """
-        JS_POPUP = """
-            () => {
-                for (const sel of ['td.gwt-MenuItem','.v-menubar-popup td','.v-contextmenu td']) {
-                    for (const el of document.querySelectorAll(sel)) {
-                        const r = el.getBoundingClientRect();
-                        if (r.width > 0 && r.top > 0)
-                            return el.textContent.trim().substring(0, 40);
-                    }
-                }
-                return null;
-            }
-        """
-        JS_CELDAS = "() => document.querySelectorAll('.v-grid-body .v-grid-cell').length"
+        if coords:
+            log.info(f"  SELECCIONAR ({coords['tag']}) @ ({coords['x']}, {coords['y']})")
+            await self.page.mouse.move(coords["x"], coords["y"])
+            await asyncio.sleep(0.2)
+            await self.page.mouse.click(coords["x"], coords["y"])
+        else:
+            log.warning("  SELECCIONAR no encontrado — coord fija (575, 449)")
+            await self.page.mouse.move(575, 449)
+            await asyncio.sleep(0.2)
+            await self.page.mouse.click(575, 449)
 
-        JS_CELDA_1974206 = """
-            () => {
-                for (const sel of ['td','span','div','a']) {
-                    for (const el of document.querySelectorAll(sel)) {
-                        if (el.textContent.trim()==='1974206') {
-                            const r = el.getBoundingClientRect();
-                            if (r.width>0 && r.left>0 && r.top>0) {
-                                const sig = el.nextElementSibling;
-                                const sr = sig ? sig.getBoundingClientRect() : null;
-                                return {
-                                    x: sr ? Math.round(sr.left+sr.width/2) : Math.round(r.right+80),
-                                    y: Math.round(r.top+r.height/2)
-                                };
-                            }
-                        }
-                    }
-                }
-                return null;
-            }
-        """
+        log.info("Paso 7 completado")
 
-        async def reabrir_modal():
-            log.info("  Reabriendo modal...")
-            for _ in range(6):
-                c = await self.page.evaluate(JS_CELDA_1974206)
-                if not c:
-                    await asyncio.sleep(2)
-                    continue
-                await self.page.mouse.move(c["x"], c["y"])
-                await asyncio.sleep(0.2)
-                await self.page.mouse.dblclick(c["x"], c["y"], delay=100)
-                await asyncio.sleep(12)
-                n = await self.page.evaluate(JS_CELDAS)
-                if n > 20:
-                    log.info(f"  Modal reabierto ({n} celdas)")
-                    return True
-            log.warning("  No se pudo reabrir el modal")
-            return False
+    async def step8_descargar_archivo(self):
+        log.info("Paso 8: Click en link de descarga")
 
-        # Grilla de coordenadas — zona superior derecha del modal
-        # El modal ocupa hasta ~x=1145. Botón azul confirmado en x≈1075, y≈192
-        # Probamos x=[1040..1145] cada 10px, y=[165..210] cada 5px
-        xs = list(range(1040, 1146, 8))
-        ys = list(range(165, 211, 5))
+        link_el = None
+        for espera in range(20):
+            await asyncio.sleep(0.5)
+            link_el = await self.page.query_selector(
+                "a[href*='Ventas'], a[href*='ventas'], a[href*='.zip'], a[href*='.xls']"
+            )
+            if link_el and await link_el.is_visible():
+                texto = (await link_el.inner_text()).strip()
+                log.info(f"  [{espera+1}] Link: '{texto}'")
+                break
+            log.info(f"  [{espera+1}] Esperando link...")
 
-        encontrado = None
-        intento = 0
-        n_antes = await self.page.evaluate(JS_CELDAS)
+        await self._screenshot("paso8_modal_descarga")
 
-        for y in ys:
-            for x in xs:
-                intento += 1
-                log.info(f"  [{intento:03d}] Click @ ({x}, {y})")
+        if not link_el:
+            raise Exception("Link de descarga no encontrado")
 
-                await self.page.mouse.move(x, y)
-                await asyncio.sleep(0.1)
-                await self.page.mouse.click(x, y)
-                await asyncio.sleep(1.2)
-
-                await self.page.screenshot(
-                    path=str(LOG_DIR / f"diag_{intento:03d}_x{x}_y{y}.png"),
-                    timeout=5000
-                )
-
-                # Verificar resultado
-                formato = await self.page.evaluate(JS_FORMATO)
-                if formato:
-                    log.info(f"  ✅✅✅ FORMATO DE DESCARGA @ ({x}, {y}) ✅✅✅")
-                    encontrado = (x, y)
-                    await self.page.screenshot(
-                        path=str(LOG_DIR / f"EXITO_x{x}_y{y}.png"), timeout=8000
-                    )
-                    return encontrado
-
-                popup = await self.page.evaluate(JS_POPUP)
-                if popup:
-                    log.info(f"  ✅ POPUP '{popup}' @ ({x}, {y})")
-                    encontrado = (x, y)
-                    await self.page.screenshot(
-                        path=str(LOG_DIR / f"POPUP_x{x}_y{y}.png"), timeout=8000
-                    )
-                    return encontrado
-
-                # Verificar si el modal se cerró
-                n_despues = await self.page.evaluate(JS_CELDAS)
-                if n_despues < 20 and n_antes >= 20:
-                    log.warning(f"  Modal cerrado por click en ({x},{y})")
-                    ok = await reabrir_modal()
-                    if not ok:
-                        return None
-                    n_antes = await self.page.evaluate(JS_CELDAS)
-                    break  # saltar al siguiente y
-
-        if not encontrado:
-            log.warning("Botón no encontrado en grilla")
-        return encontrado
+        try:
+            async with self.page.expect_download(timeout=60000) as dl_info:
+                await link_el.click()
+            download = await dl_info.value
+            dest = DOWNLOAD_DIR / download.suggested_filename
+            await download.save_as(str(dest))
+            log.info(f"  ✅ Descargado: {dest}")
+            await self._screenshot("paso8_descarga_ok")
+            return str(dest)
+        except Exception as e:
+            log.error(f"  Error descarga: {e}")
+            await self._screenshot("error_descarga")
+            return None
 
     async def run(self):
         result = {"success": False, "archivo_descargado": None, "error": None}
@@ -651,13 +611,15 @@ class VentaDiariaRPA:
                 await self.step3_navegar_ventas()
                 await self.step4_setear_fecha_y_generar()
                 await self.step5_dobleclick_1974206()
-                coords = await self.step6_diagnostico_boton()
-                if coords:
-                    log.info(f"✅ Botón encontrado @ {coords}")
+                await self.step6_click_boton_descarga()
+                await self.step7_seleccionar_formato()
+                archivo = await self.step8_descargar_archivo()
+                if archivo:
                     result["success"] = True
+                    result["archivo_descargado"] = archivo
+                    log.info(f"✅ RPA completado | {archivo}")
                 else:
-                    log.warning("Botón no encontrado")
-                result["archivo_descargado"] = str(coords)
+                    result["error"] = "Descarga fallida"
             except Exception as e:
                 if "FECHA_NO_DISPONIBLE" in str(e):
                     log.warning(f"RPA detenido: {e}")
