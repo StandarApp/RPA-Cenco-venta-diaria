@@ -178,18 +178,22 @@ class VentaDiariaRPA:
 
     async def _popup_descarga_visible(self):
         """
-        Retorna True si ya apareció algún modal/popup de descarga.
-        Cubre tanto 'Formato de Descarga' como popups con 'Dato Fuente'.
+        Retorna True si apareció el modal/popup REAL de descarga.
+        Requiere 'Formato de Descarga' o 'Dato Fuente' — NO usa 'SELECCIONAR'
+        como detector standalone porque ese texto existe en otros modales.
         """
         return await self.page.evaluate("""
             () => {
-                // Modal Formato de Descarga
+                // Modal 'Formato de Descarga' — título específico
                 for (const el of document.querySelectorAll('*')) {
                     const t = el.textContent.trim();
-                    if ((t.includes('Formato de Descarga') ||
-                         t.includes('SELECCIONAR') ||
-                         t.includes('Dato Fuente')) &&
-                        el.offsetParent !== null) return true;
+                    if (el.offsetParent === null) continue;
+                    // Título del modal de formato
+                    if (t === 'Formato de Descarga') return true;
+                    // Popup con opciones de Dato Fuente
+                    if (t.includes('Dato Fuente') && t.length < 80) return true;
+                    // Modal Descargar Archivo (aparece después de SELECCIONAR)
+                    if (t === 'Descargar Archivo') return true;
                 }
                 // Popup de menú contextual de Vaadin
                 for (const sel of [
@@ -534,6 +538,10 @@ class VentaDiariaRPA:
         log.info("Paso 5: Doble click en 1974206")
         await self._wait(1000, 2000)
 
+        # Si hubo pérdida de conexión al generar el informe, esperar reconexión
+        # antes de buscar la celda — si no, la tabla está vacía y falla
+        await self._esperar_conexion()
+
         JS_CELDA = """
             () => {
                 for (const sel of ['td','span','div','a']) {
@@ -555,7 +563,16 @@ class VentaDiariaRPA:
             }
         """
 
-        coords = await self.page.evaluate(JS_CELDA)
+        # Esperar hasta 30s a que la celda 1974206 aparezca en la tabla
+        # (puede tardar si Vaadin acaba de reconectar y está re-renderizando)
+        coords = None
+        for espera in range(15):
+            coords = await self.page.evaluate(JS_CELDA)
+            if coords:
+                break
+            log.info(f"  Esperando celda 1974206 [{espera+1}/15]...")
+            await asyncio.sleep(2)
+
         if not coords:
             raise Exception("Celda 1974206 no encontrada")
         log.info(f"  Celda adyacente @ ({coords['x']}, {coords['y']})")
@@ -1061,7 +1078,15 @@ class VentaDiariaRPA:
             }
         """
 
-        coords = await self.page.evaluate(JS_CELDA)
+        # Esperar hasta 30s a que la celda aparezca (puede tardar tras reconexión)
+        coords = None
+        for espera in range(15):
+            coords = await self.page.evaluate(JS_CELDA)
+            if coords:
+                break
+            log.info(f"  Esperando celda 1974206 en inventario [{espera+1}/15]...")
+            await asyncio.sleep(2)
+
         if not coords:
             raise Exception("Celda 1974206 no encontrada en inventario")
         log.info(f"  Celda adyacente @ ({coords['x']}, {coords['y']})")
