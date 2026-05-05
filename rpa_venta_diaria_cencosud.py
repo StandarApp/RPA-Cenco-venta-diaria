@@ -79,29 +79,30 @@ def _leer_excel_de_zip(zip_path):
                 continue
             raw = z.read(nombre)
             if ext == ".csv":
-                # Probar encodings y separadores comunes
-                for encoding in ("utf-8-sig", "latin-1", "utf-8"):
-                    for sep in (";", ",", "\t"):
+                # Los CSV de Cencosud vienen en UTF-16-LE sin BOM — probar primero
+                # y luego fallback a otros encodings comunes
+                for encoding in ("utf-16-le", "utf-8-sig", "latin-1", "utf-8"):
+                    for sep in (",", ";", "\t"):
                         try:
                             df = pd.read_csv(
                                 io.BytesIO(raw), sep=sep,
                                 encoding=encoding,
-                                thousands=".", decimal=","
                             )
-                            if len(df.columns) > 1:
-                                log.info(f"  CSV leido con sep='{sep}' encoding='{encoding}': {len(df)} filas")
+                            if len(df.columns) > 1 and not df.columns[0].startswith("Unnamed"):
+                                log.info(f"  CSV leido con encoding='{encoding}' sep='{sep}': {len(df)} filas")
+                                log.info(f"  Columnas: {list(df.columns)}")
                                 return df
                         except Exception:
                             pass
                 raise ValueError(f"No se pudo parsear el CSV {nombre} dentro de {zip_path}")
             elif ext == ".xlsx":
                 df = pd.read_excel(io.BytesIO(raw), engine="openpyxl")
-                log.info(f"  XLSX leido: {len(df)} filas")
+                log.info(f"  XLSX leido: {len(df)} filas, columnas: {list(df.columns)}")
                 return df
             elif ext == ".xls":
-                # .xls requiere xlrd — instalado en el workflow
+                # .xls (Excel 97-2003) requiere xlrd
                 df = pd.read_excel(io.BytesIO(raw), engine="xlrd")
-                log.info(f"  XLS leido: {len(df)} filas")
+                log.info(f"  XLS leido: {len(df)} filas, columnas: {list(df.columns)}")
                 return df
         raise ValueError(f"No se encontro ningun archivo Excel/CSV dentro de {zip_path}")
 
@@ -130,9 +131,9 @@ def subir_inventario(zip_path):
     df = _leer_excel_de_zip(zip_path)
     log.info(f"  Filas leidas del Excel: {len(df)}")
     log.info(f"  Columnas: {list(df.columns)}")
-    col_local  = _buscar_columna(df, ["Local", "ID Local", "cod_local", "sucursal", "Cod. Local", "Codigo Local", "Cod Local"])
-    col_desc   = _buscar_columna(df, ["Nombre Local", "descripcion", "nombre", "Descripcion Local", "Descripcion"])
-    col_stock  = _buscar_columna(df, ["stock_un", "stock", "Inv. Actual(Un)", "Inv. Actual (Un)", "Stock (Un)", "Stock(Un)"])
+    col_local  = _buscar_columna(df, ["Cód. Local", "Local", "ID Local", "cod_local", "sucursal", "Cod. Local", "Codigo Local", "Cod Local"])
+    col_desc   = _buscar_columna(df, ["Descripción Local", "Nombre Local", "descripcion", "nombre", "Descripcion Local"])
+    col_stock  = _buscar_columna(df, ["Stock(Un)", "stock_un", "stock", "Inv. Actual(Un)", "Inv. Actual (Un)", "Stock (Un)"])
     registros = []
     for _, fila in df.iterrows():
         stock = _limpiar_numero(fila[col_stock])
@@ -166,10 +167,10 @@ def subir_ventas(zip_path):
     df = _leer_excel_de_zip(zip_path)
     log.info(f"  Filas leidas del Excel: {len(df)}")
     log.info(f"  Columnas: {list(df.columns)}")
-    col_local   = _buscar_columna(df, ["Local", "ID Local", "cod_local", "sucursal", "Cod. Local", "Codigo Local", "Cod Local"])
-    col_desc    = _buscar_columna(df, ["Nombre Local", "descripcion", "nombre", "Descripcion Local", "Descripcion"])
-    col_vta_un  = _buscar_columna(df, ["venta periodo(un)", "unidades", "Venta Periodo(Un)", "Vta. Periodo (Un)", "Vta. Periodo(Un)"])
-    col_vta_clp = _buscar_columna(df, ["Ventas", "Monto", "venta periodo publico", "Venta Periodo Publico ($)", "Vta. Periodo Publico ($)"])
+    col_local   = _buscar_columna(df, ["Cód. Local", "Local", "ID Local", "cod_local", "sucursal", "Cod. Local", "Codigo Local", "Cod Local"])
+    col_desc    = _buscar_columna(df, ["Descripción Local", "Nombre Local", "descripcion", "nombre", "Descripcion Local"])
+    col_vta_un  = _buscar_columna(df, ["Venta Período(Un)", "Venta Periodo(Un)", "venta periodo(un)", "unidades", "Vta. Periodo (Un)", "Vta. Periodo(Un)"])
+    col_vta_clp = _buscar_columna(df, ["Venta Período Público ($)", "Venta Periodo Publico ($)", "Ventas", "Monto", "venta periodo publico", "Vta. Periodo Publico ($)"])
     registros = []
     for _, fila in df.iterrows():
         vta_un  = _limpiar_numero(fila[col_vta_un])
