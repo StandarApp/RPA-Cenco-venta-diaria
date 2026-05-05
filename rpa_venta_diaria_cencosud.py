@@ -162,7 +162,8 @@ def subir_ventas(zip_path):
     log.info("=" * 50)
     log.info("Subiendo VENTAS a Supabase...")
     log.info("=" * 50)
-    fecha_hoy = datetime.now().strftime("%Y-%m-%d")
+    # Los datos son siempre de ayer — usar _fecha_ayer() en formato YYYY-MM-DD
+    fecha_hoy = datetime.strptime(_fecha_ayer(), "%d-%m-%Y").strftime("%Y-%m-%d")
     sb = _supabase_client()
     df = _leer_excel_de_zip(zip_path)
     log.info(f"  Filas leidas del Excel: {len(df)}")
