@@ -249,9 +249,26 @@ class VentaDiariaRPA:
         if _es_dashboard(self.page.url):
             log.info("✅ Sesión activa")
             return True
-        try:
-            await self.page.wait_for_selector("#kc-login", timeout=10000)
-        except Exception:
+
+        # Esperar hasta 60s a que aparezca #kc-login o el dashboard.
+        # El redirect SSO post-Ingresar puede tardar bastante, especialmente
+        # en el reset de sesión donde la redirección parte desde BASE_URL.
+        kc_listo = False
+        for i in range(60):
+            await asyncio.sleep(1)
+            if _es_dashboard(self.page.url):
+                log.info("✅ Sesión activa (detectada durante espera)")
+                return True
+            try:
+                el = await self.page.query_selector("#kc-login")
+                if el:
+                    kc_listo = True
+                    break
+            except Exception:
+                pass
+            log.info(f"  Esperando Keycloak [{i+1}/60] url={self.page.url[:60]}")
+
+        if not kc_listo:
             if _es_dashboard(self.page.url):
                 return True
             return False
