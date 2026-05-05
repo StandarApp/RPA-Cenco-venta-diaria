@@ -7,13 +7,17 @@ Flujo:
   3. Setear fecha AYER en ambos campos (Desde / Hasta)
   4. Click Generar Informe
   5. Doble click en celda adyacente a 1974206 → modal Detalle de Producto
-  6. Click botón ↓ @ (1075, 190) CONFIRMADO por diagnóstico
+  6. Click botón ↓ @ (1075, 192) — con detección de pérdida de conexión y reintento
   7. Click SELECCIONAR en modal Formato de Descarga
   8. Click link Ventas(detalleProducto)*.zip → descarga
 
-COORDENADA CONFIRMADA: el botón ↓ azul del modal está en (1075, 190).
-Identificado por script de diagnóstico que probó grilla sistemática de coordenadas.
-El elemento es: DIV (1075, 192) 30x30 cls=v-button v-widget toolbar-button
+FIXES v2 (2026-05-05):
+  - step6: detecta banner "Se perdió conexión" ENTRE cada intento de click
+  - step6: si Vaadin se cae y se recupera, verifica si el modal sigue abierto;
+           si se cerró, retorna False para que run() reintente desde step5
+  - step6: agrega _popup_descarga_visible() como helper unificado
+  - step_inv4: misma lógica de detección de conexión perdida
+  - run(): si step6 retorna False (modal cerrado), reintenta step5+step6 hasta 3 veces
 """
 
 import asyncio
@@ -59,7 +63,6 @@ def _fecha_ayer():
         tz_chile = zoneinfo.ZoneInfo("America/Santiago")
         ahora_chile = datetime.now(tz_chile)
     except Exception:
-        # Fallback: UTC-4
         ahora_chile = datetime.utcnow() - timedelta(hours=4)
     ayer = ahora_chile - timedelta(days=1)
     return ayer.strftime("%d-%m-%Y")
@@ -109,6 +112,95 @@ class VentaDiariaRPA:
         await asyncio.sleep(0.2)
         await self.page.mouse.click(x, y)
         return True
+
+    # ─────────────────────────────────────────────
+    # HELPERS DE CONEXIÓN Y DETECCIÓN DE POPUPS
+    # ─────────────────────────────────────────────
+
+    async def _esperar_conexion(self, timeout_s=30):
+        """Espera hasta que desaparezca el banner de reconexión de Vaadin."""
+        for i in range(timeout_s * 2):
+            desconectado = await self.page.evaluate("""
+                () => {
+                    for (const el of document.querySelectorAll('*')) {
+                        const t = el.textContent || '';
+                        if (t.includes('perdió conexión') ||
+                            t.includes('Reconectando') ||
+                            t.includes('Lost connection')) {
+                            if (el.offsetParent !== null) return true;
+                        }
+                    }
+                    return false;
+                }
+            """)
+            if not desconectado:
+                return True
+            log.warning(f"  Conexión perdida — esperando [{i+1}/{timeout_s*2}]...")
+            await asyncio.sleep(0.5)
+        log.error("  Timeout esperando reconexión")
+        return False
+
+    async def _conexion_perdida_ahora(self):
+        """Retorna True si el banner de pérdida de conexión está visible en este momento."""
+        return await self.page.evaluate("""
+            () => {
+                for (const el of document.querySelectorAll('*')) {
+                    const t = el.textContent || '';
+                    if ((t.includes('perdió conexión') ||
+                         t.includes('Reconectando') ||
+                         t.includes('Lost connection')) &&
+                        el.offsetParent !== null) return true;
+                }
+                return false;
+            }
+        """)
+
+    async def _popup_descarga_visible(self):
+        """
+        Retorna True si ya apareció algún modal/popup de descarga.
+        Cubre tanto 'Formato de Descarga' como popups con 'Dato Fuente'.
+        """
+        return await self.page.evaluate("""
+            () => {
+                // Modal Formato de Descarga
+                for (const el of document.querySelectorAll('*')) {
+                    const t = el.textContent.trim();
+                    if ((t.includes('Formato de Descarga') ||
+                         t.includes('SELECCIONAR') ||
+                         t.includes('Dato Fuente')) &&
+                        el.offsetParent !== null) return true;
+                }
+                // Popup de menú contextual de Vaadin
+                for (const sel of [
+                    'td.gwt-MenuItem',
+                    '.v-menubar-popup td',
+                    '.v-contextmenu td'
+                ]) {
+                    for (const el of document.querySelectorAll(sel)) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 0 && r.top > 0 &&
+                            el.textContent.trim().length > 2) return true;
+                    }
+                }
+                return false;
+            }
+        """)
+
+    async def _modal_detalle_visible(self, titulo="Detalle de Producto"):
+        """Retorna True si el modal con ese título sigue abierto y visible."""
+        return await self.page.evaluate(f"""
+            () => {{
+                for (const el of document.querySelectorAll('*')) {{
+                    if (el.textContent.trim() === '{titulo}' &&
+                        el.offsetParent !== null) return true;
+                }}
+                return false;
+            }}
+        """)
+
+    # ─────────────────────────────────────────────
+    # PASOS VENTAS
+    # ─────────────────────────────────────────────
 
     async def step1_select_pais_y_unidad(self):
         log.info("Paso 1: Chile + Supermercados")
@@ -167,7 +259,7 @@ class VentaDiariaRPA:
             await self.page.wait_for_load_state("networkidle", timeout=30000)
         except Exception:
             pass
-        log.info(f"✅ Login OK")
+        log.info("✅ Login OK")
         return True
 
     async def step3_navegar_ventas(self):
@@ -208,25 +300,14 @@ class VentaDiariaRPA:
         log.info("Paso 3 completado")
 
     async def step4_setear_fecha_y_generar(self):
-        """
-        1. Leer el campo HASTA — si no es ayer, crear fecha_no_disponible.txt y abortar.
-        2. Si es ayer, setear DESDE también a ayer usando el input de texto.
-        3. Click Generar Informe.
-        """
         log.info("Paso 4: Verificar fecha HASTA y setear DESDE")
-        import re
         fecha_ayer = _fecha_ayer()
         log.info(f"  Fecha esperada (ayer): {fecha_ayer}")
         await self._screenshot("paso4_antes")
 
-        # Los campos de fecha en Vaadin son v-datefield — no son inputs HTML
-        # estándar. El valor visible está en el textContent del campo de texto
-        # interno (.v-datefield-textfield). Para escribir hay que hacer click
-        # y usar el teclado (Ctrl+A + type).
         fechas = await self.page.evaluate("""
             () => {
                 const campos = [];
-                // v-datefield contiene un input interno con la fecha
                 const inputs = document.querySelectorAll(
                     '.v-datefield input, .v-datefield-textfield'
                 );
@@ -246,7 +327,6 @@ class VentaDiariaRPA:
         """)
         log.info(f"  Campos v-datefield encontrados: {fechas}")
 
-        # Si no encontró con ese selector, buscar por texto con formato fecha
         if not fechas:
             fechas = await self.page.evaluate("""
                 () => {
@@ -269,14 +349,11 @@ class VentaDiariaRPA:
             """)
             log.info(f"  Campos input fallback: {fechas}")
 
-        # El panel muestra Desde (primero) y Hasta (segundo)
         fecha_hasta = fechas[1]["val"] if len(fechas) >= 2 else (fechas[0]["val"] if fechas else "")
-        campo_desde = fechas[0] if fechas else None
 
         log.info(f"  Fecha HASTA leída: '{fecha_hasta}'")
         log.info(f"  Fecha ayer esperada: '{fecha_ayer}'")
 
-        # Verificar HASTA
         if fecha_hasta != fecha_ayer:
             msg = (f"Fecha no disponible. "
                    f"La plataforma muestra HASTA={fecha_hasta} "
@@ -290,27 +367,22 @@ class VentaDiariaRPA:
 
         log.info(f"  ✅ Fecha HASTA correcta: {fecha_hasta}")
 
-        # Setear DESDE a ayer usando el calendario visual del v-datefield.
-        # 1. Click en el ícono 📅 del campo DESDE para abrir el datepicker
-        # 2. Buscar el día de ayer en el calendario y clickearlo
         try:
             import zoneinfo
             tz_chile = zoneinfo.ZoneInfo("America/Santiago")
             ayer_dt = datetime.now(tz_chile) - timedelta(days=1)
         except Exception:
             ayer_dt = datetime.utcnow() - timedelta(hours=4) - timedelta(days=1)
-        dia_ayer = ayer_dt.day        # número del día (ej: 3)
-        mes_ayer = ayer_dt.month      # número del mes  (ej: 5)
-        anio_ayer = ayer_dt.year      # año             (ej: 2026)
+        dia_ayer  = ayer_dt.day
+        mes_ayer  = ayer_dt.month
+        anio_ayer = ayer_dt.year
         log.info(f"  Abriendo calendario DESDE para seleccionar día {dia_ayer}/{mes_ayer}/{anio_ayer}")
 
-        # Click en el ícono del calendario del campo DESDE (primer ícono de calendario)
         icono_cal = await self.page.evaluate("""
             () => {
-                // El ícono del calendario es un button o span dentro del v-datefield
                 const campos = document.querySelectorAll('.v-datefield');
                 if (campos.length === 0) return null;
-                const primero = campos[0];  // DESDE = primer v-datefield
+                const primero = campos[0];
                 const btn = primero.querySelector(
                     'button, .v-datefield-button, [class*="calendar"], [class*="button"]'
                 );
@@ -322,11 +394,8 @@ class VentaDiariaRPA:
                 return null;
             }
         """)
-
         if not icono_cal:
-            # Fallback: click en la coordenada del ícono 📅 del DESDE
-            # Del screenshot: ícono está a la izquierda del campo, ~x=91, y=514
-            icono_cal = {"x": 91, "y": 514}
+            icono_cal = {"x": 93, "y": 514}
             log.warning(f"  Ícono calendario no encontrado — coord fija {icono_cal}")
 
         log.info(f"  Click ícono calendario DESDE @ ({icono_cal['x']}, {icono_cal['y']})")
@@ -336,13 +405,9 @@ class VentaDiariaRPA:
         await asyncio.sleep(1.0)
         await self._screenshot("paso4_calendario_abierto")
 
-        # Buscar el día de ayer en el calendario abierto
-        # Los días son celdas con el número exacto como texto
         dia_clickeado = await self.page.evaluate(f"""
             () => {{
                 const dia = {dia_ayer};
-                // Buscar en el datepicker abierto — puede ser .v-datefield-calendarpanel
-                // o un overlay. Los días son td, span o div con el número exacto.
                 const selectores = [
                     '.v-datefield-calendarpanel td',
                     '.v-datefield-calendarpanel span',
@@ -381,11 +446,9 @@ class VentaDiariaRPA:
             log.warning(f"  ⚠️ Día {dia_ayer} no encontrado en calendario — DESDE sin cambios")
 
         await self._screenshot("paso4_fecha_seteada_calendario")
-
         await self._screenshot("paso4_fecha_seteada")
         await asyncio.sleep(1)
 
-        # Click Generar Informe
         for _ in range(10):
             await asyncio.sleep(1)
             coords = await self.page.evaluate("""
@@ -445,7 +508,7 @@ class VentaDiariaRPA:
 
         modal_listo = False
         for intento in range(6):
-            log.info(f"  dblclick [{intento+1}/4]")
+            log.info(f"  dblclick [{intento+1}/6]")
             await self.page.mouse.move(coords["x"], coords["y"])
             await asyncio.sleep(0.2)
             await self.page.mouse.dblclick(coords["x"], coords["y"], delay=100)
@@ -474,48 +537,25 @@ class VentaDiariaRPA:
 
         await self._screenshot("paso5_modal_abierto")
         log.info("Paso 5 completado")
-
-    async def _esperar_conexion(self, timeout_s=30):
-        """Espera hasta que desaparezca el banner de reconexión de Vaadin."""
-        for i in range(timeout_s * 2):
-            desconectado = await self.page.evaluate("""
-                () => {
-                    for (const el of document.querySelectorAll('*')) {
-                        const t = el.textContent || '';
-                        if (t.includes('perdió conexión') ||
-                            t.includes('Reconectando') ||
-                            t.includes('Lost connection')) {
-                            if (el.offsetParent !== null) return true;
-                        }
-                    }
-                    return false;
-                }
-            """)
-            if not desconectado:
-                return True
-            log.warning(f"  Conexión perdida — esperando [{i+1}/{timeout_s*2}]...")
-            await asyncio.sleep(0.5)
-        log.error("  Timeout esperando reconexión")
-        return False
+        return modal_listo
 
     async def step6_click_boton_descarga(self):
         """
-        Click en botón ↓ del modal. Prueba click normal y JS dispatch.
-        Espera reconexión si la plataforma la perdió.
+        Click en botón ↓ del modal Detalle de Producto.
+
+        FIX v2:
+        - Llama _esperar_conexion() ANTES de cada intento.
+        - Después de cada click, detecta si Vaadin perdió conexión.
+        - Si se pierde conexión, espera reconexión y verifica si el modal sigue abierto.
+        - Si el modal se cerró tras la reconexión, retorna False para que run()
+          pueda reintentar desde step5.
+        - Retorna True si el popup de descarga quedó abierto, False si no.
         """
         log.info("Paso 6: Click en botón ↓ del modal")
+
+        # Esperar que la conexión esté estable antes de empezar
         await self._esperar_conexion()
         await self._screenshot("paso6_antes")
-
-        JS_FORMATO = """
-            () => {
-                for (const el of document.querySelectorAll('*')) {
-                    if (el.textContent.trim().includes('Formato de Descarga') &&
-                        el.offsetParent !== null) return true;
-                }
-                return false;
-            }
-        """
 
         candidatos = [
             (1075, 192), (1064, 180), (1070, 185), (1070, 192),
@@ -523,17 +563,53 @@ class VentaDiariaRPA:
         ]
 
         for x, y in candidatos:
-            # Método 1: click normal
+            # ── Verificar conexión antes de cada intento ──────────────────
+            if await self._conexion_perdida_ahora():
+                log.warning(f"  ⚠️ Conexión perdida antes de probar ({x}, {y}) — esperando...")
+                recuperado = await self._esperar_conexion()
+                if not recuperado:
+                    log.error("  No se recuperó la conexión — abortando paso 6")
+                    return False
+                await asyncio.sleep(1.5)  # dar tiempo a Vaadin para re-renderizar
+
+                # Si el modal se cerró durante la reconexión no tiene sentido
+                # seguir con las coords — hay que reintentar desde step5
+                if not await self._modal_detalle_visible("Detalle de Producto"):
+                    log.warning("  Modal se cerró tras reconexión — se necesita reintentar step5")
+                    return False
+
+            # ── Intento 1: click normal de mouse ──────────────────────────
             log.info(f"  Click normal ({x}, {y})...")
             await self.page.mouse.move(x, y)
             await asyncio.sleep(0.2)
             await self.page.mouse.click(x, y)
             await asyncio.sleep(1.2)
-            if await self.page.evaluate(JS_FORMATO):
-                log.info(f"  ✅ Formato de Descarga @ ({x}, {y}) — click normal")
-                break
 
-            # Método 2: JS dispatch mousedown+mouseup+click
+            if await self._popup_descarga_visible():
+                log.info(f"  ✅ Popup abierto @ ({x}, {y}) — click normal")
+                await self._screenshot("paso6_post_click")
+                log.info("Paso 6 completado")
+                return True
+
+            # ── Detectar pérdida de conexión post-click ───────────────────
+            if await self._conexion_perdida_ahora():
+                log.warning(f"  ⚠️ Conexión perdida tras click ({x}, {y}) — esperando reconexión...")
+                await self._screenshot(f"paso6_conexion_perdida_{x}_{y}")
+                recuperado = await self._esperar_conexion()
+                await asyncio.sleep(2.0)  # Vaadin necesita tiempo para re-renderizar
+
+                if not recuperado:
+                    log.error("  Timeout en reconexión — abortando paso 6")
+                    return False
+
+                if not await self._modal_detalle_visible("Detalle de Producto"):
+                    log.warning("  Modal cerrado tras reconexión — reintentar step5")
+                    return False
+
+                # Conexión recuperada y modal sigue abierto → continuar con JS dispatch
+                log.info("  Conexión recuperada y modal sigue abierto — probando JS dispatch...")
+
+            # ── Intento 2: JS dispatch (mousedown + mouseup + click) ──────
             log.info(f"  JS dispatch ({x}, {y})...")
             await self.page.evaluate(f"""
                 () => {{
@@ -546,14 +622,35 @@ class VentaDiariaRPA:
                 }}
             """)
             await asyncio.sleep(1.2)
-            if await self.page.evaluate(JS_FORMATO):
-                log.info(f"  ✅ Formato de Descarga @ ({x}, {y}) — JS dispatch")
-                break
+
+            if await self._popup_descarga_visible():
+                log.info(f"  ✅ Popup abierto @ ({x}, {y}) — JS dispatch")
+                await self._screenshot("paso6_post_click")
+                log.info("Paso 6 completado")
+                return True
+
+            # ── Detectar pérdida de conexión post JS dispatch ─────────────
+            if await self._conexion_perdida_ahora():
+                log.warning(f"  ⚠️ Conexión perdida tras JS dispatch ({x}, {y}) — esperando...")
+                await self._screenshot(f"paso6_conexion_perdida_js_{x}_{y}")
+                recuperado = await self._esperar_conexion()
+                await asyncio.sleep(2.0)
+
+                if not recuperado:
+                    log.error("  Timeout en reconexión — abortando paso 6")
+                    return False
+
+                if not await self._modal_detalle_visible("Detalle de Producto"):
+                    log.warning("  Modal cerrado tras reconexión — reintentar step5")
+                    return False
 
             log.info(f"  ({x},{y}) sin resultado")
 
+        # Agotamos todos los candidatos sin éxito
         await self._screenshot("paso6_post_click")
-        log.info("Paso 6 completado")
+        log.warning("  ⚠️ Ninguna coordenada abrió el popup de descarga")
+        log.info("Paso 6 completado (sin éxito confirmado)")
+        return False
 
     async def step7_seleccionar_formato(self):
         log.info("Paso 7: Click SELECCIONAR")
@@ -631,6 +728,10 @@ class VentaDiariaRPA:
             await self._screenshot("error_descarga")
             return None
 
+    # ─────────────────────────────────────────────
+    # PASOS INVENTARIO (encadenado tras ventas)
+    # ─────────────────────────────────────────────
+
     async def step_inv1_navegar_inventario(self):
         """Abastecimiento → Detalle de Inventario."""
         log.info("INV Paso 1: Abastecimiento → Detalle de Inventario")
@@ -647,7 +748,6 @@ class VentaDiariaRPA:
             if not ok:
                 await asyncio.sleep(3)
                 continue
-
             for espera in range(20):
                 await asyncio.sleep(2)
                 ok2 = await self.page.evaluate("""
@@ -692,7 +792,6 @@ class VentaDiariaRPA:
                 await self.page.mouse.click(coords["x"], coords["y"])
                 break
 
-        # Esperar tabla con 1974206
         for espera in range(30):
             await asyncio.sleep(2)
             tiene = await self.page.evaluate("""
@@ -772,32 +871,20 @@ class VentaDiariaRPA:
 
         await self._screenshot("inv_paso3_modal_abierto")
         log.info("INV Paso 3 completado")
+        return modal_listo
 
     async def step_inv4_click_boton_descarga(self):
         """
-        Click en botón ↓ del modal inventario @ (1064, 180) — CONFIRMADO.
-        Abre Formato de Descarga o popup con opciones.
+        Click en botón ↓ del modal inventario.
+
+        FIX v2: misma lógica que step6 — detecta pérdida de conexión entre
+        intentos y retorna False si el modal se cierra, para que run() pueda
+        reintentar desde step_inv3.
         """
-        log.info("INV Paso 4: Click botón ↓ @ (1064, 180)")
+        log.info("INV Paso 4: Click botón ↓ del modal inventario")
+
         await self._esperar_conexion()
         await self._screenshot("inv_paso4_antes")
-
-        JS_EXITO = """
-            () => {
-                for (const el of document.querySelectorAll('*')) {
-                    if ((el.textContent.trim().includes('Formato de Descarga') ||
-                         el.textContent.trim().includes('Dato Fuente')) &&
-                        el.offsetParent !== null) return true;
-                }
-                for (const sel of ['td.gwt-MenuItem','.v-menubar-popup td','.v-contextmenu td']) {
-                    for (const el of document.querySelectorAll(sel)) {
-                        const r = el.getBoundingClientRect();
-                        if (r.width > 0 && r.top > 0) return true;
-                    }
-                }
-                return false;
-            }
-        """
 
         candidatos = [
             (1064, 180), (1075, 192), (1070, 185), (1070, 192),
@@ -805,15 +892,44 @@ class VentaDiariaRPA:
         ]
 
         for x, y in candidatos:
+            # ── Verificar conexión antes de cada intento ──────────────────
+            if await self._conexion_perdida_ahora():
+                log.warning(f"  ⚠️ Conexión perdida antes de probar ({x}, {y}) — esperando...")
+                recuperado = await self._esperar_conexion()
+                if not recuperado:
+                    return False
+                await asyncio.sleep(1.5)
+                if not await self._modal_detalle_visible("Detalle de Inventario"):
+                    log.warning("  Modal inventario cerrado tras reconexión — reintentar inv3")
+                    return False
+
+            # ── Intento 1: click normal ───────────────────────────────────
             log.info(f"  Probando ({x}, {y})...")
             await self.page.mouse.move(x, y)
             await asyncio.sleep(0.2)
             await self.page.mouse.click(x, y)
             await asyncio.sleep(1.5)
-            if await self.page.evaluate(JS_EXITO):
-                log.info(f"  ✅ Abierto @ ({x}, {y})")
-                break
-            # JS dispatch fallback
+
+            if await self._popup_descarga_visible():
+                log.info(f"  ✅ Popup abierto @ ({x}, {y}) — click normal")
+                await self._screenshot("inv_paso4_post_click")
+                log.info("INV Paso 4 completado")
+                return True
+
+            # ── Detectar pérdida de conexión post-click ───────────────────
+            if await self._conexion_perdida_ahora():
+                log.warning(f"  ⚠️ Conexión perdida tras click ({x}, {y}) — esperando...")
+                await self._screenshot(f"inv_paso4_conexion_perdida_{x}_{y}")
+                recuperado = await self._esperar_conexion()
+                await asyncio.sleep(2.0)
+                if not recuperado:
+                    return False
+                if not await self._modal_detalle_visible("Detalle de Inventario"):
+                    log.warning("  Modal cerrado — reintentar inv3")
+                    return False
+
+            # ── Intento 2: JS dispatch ────────────────────────────────────
+            log.info(f"  JS dispatch ({x}, {y})...")
             await self.page.evaluate(f"""
                 () => {{
                     for (const el of document.elementsFromPoint({x}, {y})) {{
@@ -825,12 +941,29 @@ class VentaDiariaRPA:
                 }}
             """)
             await asyncio.sleep(1.5)
-            if await self.page.evaluate(JS_EXITO):
-                log.info(f"  ✅ Abierto via JS @ ({x}, {y})")
-                break
+
+            if await self._popup_descarga_visible():
+                log.info(f"  ✅ Popup abierto @ ({x}, {y}) — JS dispatch")
+                await self._screenshot("inv_paso4_post_click")
+                log.info("INV Paso 4 completado")
+                return True
+
+            if await self._conexion_perdida_ahora():
+                log.warning(f"  ⚠️ Conexión perdida tras JS dispatch ({x}, {y}) — esperando...")
+                recuperado = await self._esperar_conexion()
+                await asyncio.sleep(2.0)
+                if not recuperado:
+                    return False
+                if not await self._modal_detalle_visible("Detalle de Inventario"):
+                    log.warning("  Modal cerrado — reintentar inv3")
+                    return False
+
+            log.info(f"  ({x},{y}) sin resultado")
 
         await self._screenshot("inv_paso4_post_click")
-        log.info("INV Paso 4 completado")
+        log.warning("  ⚠️ Ninguna coordenada abrió el popup de descarga (inventario)")
+        log.info("INV Paso 4 completado (sin éxito confirmado)")
+        return False
 
     async def step_inv5_seleccionar_dato_fuente(self):
         """
@@ -840,10 +973,8 @@ class VentaDiariaRPA:
         log.info("INV Paso 5: Seleccionar Dato Fuente / Formato")
         await asyncio.sleep(1)
 
-        # Verificar qué apareció
         estado = await self.page.evaluate("""
             () => {
-                // Popup con opciones
                 for (const sel of ['td.gwt-MenuItem','.v-menubar-popup td','.v-contextmenu td']) {
                     for (const el of document.querySelectorAll(sel)) {
                         const r = el.getBoundingClientRect();
@@ -854,7 +985,6 @@ class VentaDiariaRPA:
                                     y: Math.round(r.top+r.height/2)};
                     }
                 }
-                // Formato de Descarga directo
                 for (const el of document.querySelectorAll('*')) {
                     if (el.textContent.trim().includes('Formato de Descarga') &&
                         el.offsetParent !== null) return {tipo: 'formato'};
@@ -865,7 +995,6 @@ class VentaDiariaRPA:
         log.info(f"  Estado: {estado}")
 
         if estado['tipo'] == 'popup':
-            # Buscar "Dato Fuente" en el popup
             item = await self.page.evaluate("""
                 () => {
                     for (const sel of ['td.gwt-MenuItem','.v-menubar-popup td','.v-contextmenu td']) {
@@ -879,7 +1008,6 @@ class VentaDiariaRPA:
                             }
                         }
                     }
-                    // Si no encontró Dato Fuente, tomar el segundo item del popup
                     const items = [];
                     for (const sel of ['td.gwt-MenuItem','.v-menubar-popup td']) {
                         for (const el of document.querySelectorAll(sel)) {
@@ -906,7 +1034,6 @@ class VentaDiariaRPA:
                 await self.page.mouse.click(1253, 209)
 
         elif estado['tipo'] == 'formato':
-            # Click SELECCIONAR
             coords = await self.page.evaluate("""
                 () => {
                     for (const el of document.querySelectorAll(
@@ -974,8 +1101,14 @@ class VentaDiariaRPA:
             await self._screenshot("inv_error_descarga")
             return None
 
+    # ─────────────────────────────────────────────
+    # RUNNER PRINCIPAL
+    # ─────────────────────────────────────────────
+
     async def run(self):
-        result = {"success": False, "archivo_descargado": None, "error": None}
+        result = {"success": False, "archivo_ventas": None,
+                  "archivo_inventario": None, "error": None}
+
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=self.headless,
@@ -992,38 +1125,76 @@ class VentaDiariaRPA:
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
             )
             self.page = await context.new_page()
+
             try:
                 await self.step1_select_pais_y_unidad()
                 if not await self.step2_login():
                     result["error"] = "Login fallido"
                     return result
+
                 await self.step3_navegar_ventas()
                 await self.step4_setear_fecha_y_generar()
-                await self.step5_dobleclick_1974206()
-                await self.step6_click_boton_descarga()
+
+                # ── Ventas: step5 + step6 con reintento por pérdida de conexión ──
+                MAX_REINTENTOS_VENTAS = 3
+                popup_ventas_ok = False
+                for reintento in range(MAX_REINTENTOS_VENTAS):
+                    if reintento > 0:
+                        log.warning(f"  🔁 Reintento ventas [{reintento}/{MAX_REINTENTOS_VENTAS-1}] — rehaciendo step5")
+                        await self._screenshot(f"paso5_reintento_{reintento}")
+                    await self.step5_dobleclick_1974206()
+                    popup_ventas_ok = await self.step6_click_boton_descarga()
+                    if popup_ventas_ok:
+                        break
+                    log.warning(f"  step6 retornó False (reintento {reintento+1}/{MAX_REINTENTOS_VENTAS})")
+
+                if not popup_ventas_ok:
+                    log.error("  ❌ No se pudo abrir popup de descarga en ventas tras reintentos")
+                    raise Exception("Popup descarga ventas no abierto tras reintentos")
+
                 await self.step7_seleccionar_formato()
                 archivo = await self.step8_descargar_archivo()
+
                 if archivo:
                     result["archivo_ventas"] = archivo
                     log.info(f"✅ Ventas descargado | {archivo}")
-                    # Continuar con RPA Inventario
+
+                    # ── Inventario encadenado ──────────────────────────────
                     log.info("=" * 50)
                     log.info("Iniciando RPA Inventario...")
                     log.info("=" * 50)
+
                     await self.step_inv1_navegar_inventario()
                     await self.step_inv2_generar_informe()
-                    await self.step_inv3_dobleclick_1974206()
-                    await self.step_inv4_click_boton_descarga()
-                    await self.step_inv5_seleccionar_dato_fuente()
-                    archivo_inv = await self.step_inv6_descargar_archivo()
-                    if archivo_inv:
-                        log.info(f"✅ Inventario descargado | {archivo_inv}")
-                        result["success"] = True
-                        result["archivo_inventario"] = archivo_inv
+
+                    # step_inv3 + step_inv4 con reintento por pérdida de conexión
+                    MAX_REINTENTOS_INV = 3
+                    popup_inv_ok = False
+                    for reintento in range(MAX_REINTENTOS_INV):
+                        if reintento > 0:
+                            log.warning(f"  🔁 Reintento inventario [{reintento}/{MAX_REINTENTOS_INV-1}] — rehaciendo inv3")
+                            await self._screenshot(f"inv_paso3_reintento_{reintento}")
+                        await self.step_inv3_dobleclick_1974206()
+                        popup_inv_ok = await self.step_inv4_click_boton_descarga()
+                        if popup_inv_ok:
+                            break
+                        log.warning(f"  inv4 retornó False (reintento {reintento+1}/{MAX_REINTENTOS_INV})")
+
+                    if not popup_inv_ok:
+                        log.error("  ❌ No se pudo abrir popup de descarga en inventario tras reintentos")
+                        result["error"] = "Popup descarga inventario no abierto tras reintentos"
                     else:
-                        result["error"] = "Descarga inventario fallida"
+                        await self.step_inv5_seleccionar_dato_fuente()
+                        archivo_inv = await self.step_inv6_descargar_archivo()
+                        if archivo_inv:
+                            log.info(f"✅ Inventario descargado | {archivo_inv}")
+                            result["success"] = True
+                            result["archivo_inventario"] = archivo_inv
+                        else:
+                            result["error"] = "Descarga inventario fallida"
                 else:
                     result["error"] = "Descarga ventas fallida"
+
             except Exception as e:
                 if "FECHA_NO_DISPONIBLE" in str(e):
                     log.warning(f"RPA detenido: {e}")
@@ -1037,6 +1208,7 @@ class VentaDiariaRPA:
                         pass
             finally:
                 await browser.close()
+
         return result
 
 
