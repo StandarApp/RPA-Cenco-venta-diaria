@@ -773,14 +773,12 @@ class VentaDiariaRPA:
         await self._screenshot("inv_paso3_modal_abierto")
         log.info("INV Paso 3 completado")
 
-    async def step_inv4_diagnostico_boton(self):
+    async def step_inv4_click_boton_descarga(self):
         """
-        Diagnóstico sistemático del botón ↓ del modal de inventario.
-        Espera reconexión si es necesario.
-        Prueba grilla de coordenadas hasta encontrar el que abre
-        Formato de Descarga o el popup con opciones.
+        Click en botón ↓ del modal inventario @ (1064, 180) — CONFIRMADO.
+        Abre Formato de Descarga o popup con opciones.
         """
-        log.info("INV Paso 4: Diagnóstico botón ↓ del modal inventario")
+        log.info("INV Paso 4: Click botón ↓ @ (1064, 180)")
         await self._esperar_conexion()
         await self._screenshot("inv_paso4_antes")
 
@@ -801,88 +799,180 @@ class VentaDiariaRPA:
             }
         """
 
-        JS_CELDAS = "() => document.querySelectorAll('.v-grid-body .v-grid-cell').length"
-        JS_CELDA_1974206 = """
+        candidatos = [
+            (1064, 180), (1075, 192), (1070, 185), (1070, 192),
+            (1080, 192), (1060, 192), (1075, 185), (1075, 180),
+        ]
+
+        for x, y in candidatos:
+            log.info(f"  Probando ({x}, {y})...")
+            await self.page.mouse.move(x, y)
+            await asyncio.sleep(0.2)
+            await self.page.mouse.click(x, y)
+            await asyncio.sleep(1.5)
+            if await self.page.evaluate(JS_EXITO):
+                log.info(f"  ✅ Abierto @ ({x}, {y})")
+                break
+            # JS dispatch fallback
+            await self.page.evaluate(f"""
+                () => {{
+                    for (const el of document.elementsFromPoint({x}, {y})) {{
+                        ['mousedown','mouseup','click'].forEach(ev =>
+                            el.dispatchEvent(new MouseEvent(ev,
+                                {{bubbles:true, cancelable:true, clientX:{x}, clientY:{y}}}))
+                        );
+                    }}
+                }}
+            """)
+            await asyncio.sleep(1.5)
+            if await self.page.evaluate(JS_EXITO):
+                log.info(f"  ✅ Abierto via JS @ ({x}, {y})")
+                break
+
+        await self._screenshot("inv_paso4_post_click")
+        log.info("INV Paso 4 completado")
+
+    async def step_inv5_seleccionar_dato_fuente(self):
+        """
+        Seleccionar 'Descargar Dato Fuente Período' del popup o
+        click SELECCIONAR si apareció Formato de Descarga directamente.
+        """
+        log.info("INV Paso 5: Seleccionar Dato Fuente / Formato")
+        await asyncio.sleep(1)
+
+        # Verificar qué apareció
+        estado = await self.page.evaluate("""
             () => {
-                for (const sel of ['td','span','div','a']) {
+                // Popup con opciones
+                for (const sel of ['td.gwt-MenuItem','.v-menubar-popup td','.v-contextmenu td']) {
                     for (const el of document.querySelectorAll(sel)) {
-                        if (el.textContent.trim()==='1974206') {
-                            const r = el.getBoundingClientRect();
-                            if (r.width>0 && r.left>0 && r.top>0) {
-                                const sig = el.nextElementSibling;
-                                const sr = sig ? sig.getBoundingClientRect() : null;
-                                return {
-                                    x: sr ? Math.round(sr.left+sr.width/2) : Math.round(r.right+80),
-                                    y: Math.round(r.top+r.height/2)
-                                };
+                        const r = el.getBoundingClientRect();
+                        const t = el.textContent.trim();
+                        if (r.width > 0 && r.top > 0 && t.length > 2)
+                            return {tipo: 'popup', text: t,
+                                    x: Math.round(r.left+r.width/2),
+                                    y: Math.round(r.top+r.height/2)};
+                    }
+                }
+                // Formato de Descarga directo
+                for (const el of document.querySelectorAll('*')) {
+                    if (el.textContent.trim().includes('Formato de Descarga') &&
+                        el.offsetParent !== null) return {tipo: 'formato'};
+                }
+                return {tipo: 'ninguno'};
+            }
+        """)
+        log.info(f"  Estado: {estado}")
+
+        if estado['tipo'] == 'popup':
+            # Buscar "Dato Fuente" en el popup
+            item = await self.page.evaluate("""
+                () => {
+                    for (const sel of ['td.gwt-MenuItem','.v-menubar-popup td','.v-contextmenu td']) {
+                        for (const el of document.querySelectorAll(sel)) {
+                            const t = el.textContent.trim();
+                            if (t.includes('Dato') || t.includes('Fuente')) {
+                                const r = el.getBoundingClientRect();
+                                if (r.width > 0 && r.top > 0)
+                                    return {x: Math.round(r.left+r.width/2),
+                                            y: Math.round(r.top+r.height/2), text: t};
                             }
                         }
                     }
+                    // Si no encontró Dato Fuente, tomar el segundo item del popup
+                    const items = [];
+                    for (const sel of ['td.gwt-MenuItem','.v-menubar-popup td']) {
+                        for (const el of document.querySelectorAll(sel)) {
+                            const r = el.getBoundingClientRect();
+                            if (r.width > 0 && r.top > 0)
+                                items.push({x: Math.round(r.left+r.width/2),
+                                            y: Math.round(r.top+r.height/2),
+                                            text: el.textContent.trim()});
+                        }
+                        if (items.length > 0) break;
+                    }
+                    return items[1] || items[0] || null;
                 }
-                return null;
-            }
-        """
+            """)
+            if item:
+                log.info(f"  Click popup '{item['text']}' @ ({item['x']}, {item['y']})")
+                await self.page.mouse.move(item["x"], item["y"])
+                await asyncio.sleep(0.3)
+                await self.page.mouse.click(item["x"], item["y"])
+            else:
+                log.warning("  Item popup no encontrado — coord fija (1253, 209)")
+                await self.page.mouse.move(1253, 209)
+                await asyncio.sleep(0.3)
+                await self.page.mouse.click(1253, 209)
 
-        async def reabrir_modal():
-            log.info("  Reabriendo modal inventario...")
-            for _ in range(6):
-                c = await self.page.evaluate(JS_CELDA_1974206)
-                if not c:
-                    await asyncio.sleep(2)
-                    continue
-                await self.page.mouse.move(c["x"], c["y"])
+        elif estado['tipo'] == 'formato':
+            # Click SELECCIONAR
+            coords = await self.page.evaluate("""
+                () => {
+                    for (const el of document.querySelectorAll(
+                        'button, .v-button, .gwt-Button, span, div'
+                    )) {
+                        if (el.textContent.trim().toUpperCase() === 'SELECCIONAR') {
+                            const r = el.getBoundingClientRect();
+                            if (r.width > 0 && r.left > 0)
+                                return {x: Math.round(r.left+r.width/2),
+                                        y: Math.round(r.top+r.height/2)};
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if coords:
+                log.info(f"  SELECCIONAR @ ({coords['x']}, {coords['y']})")
+                await self.page.mouse.move(coords["x"], coords["y"])
                 await asyncio.sleep(0.2)
-                await self.page.mouse.dblclick(c["x"], c["y"], delay=100)
-                await asyncio.sleep(12)
-                n = await self.page.evaluate(JS_CELDAS)
-                if n > 20:
-                    log.info(f"  Modal reabierto ({n} celdas)")
-                    return True
-            return False
+                await self.page.mouse.click(coords["x"], coords["y"])
+            else:
+                log.warning("  SELECCIONAR no encontrado — coord fija (575, 449)")
+                await self.page.mouse.move(575, 449)
+                await asyncio.sleep(0.2)
+                await self.page.mouse.click(575, 449)
+        else:
+            log.warning("  Ni popup ni formato detectado")
 
-        # Grilla: zona superior derecha del modal de inventario
-        # Similar al modal de ventas — probar x=[1040..1145] y=[165..215]
-        xs = list(range(1040, 1146, 8))
-        ys = list(range(165, 216, 5))
+        await asyncio.sleep(2)
+        await self._screenshot("inv_paso5_post_seleccion")
+        log.info("INV Paso 5 completado")
 
-        encontrado = None
-        intento = 0
-        n_antes = await self.page.evaluate(JS_CELDAS)
+    async def step_inv6_descargar_archivo(self):
+        """Click en link InvDetalle*.zip → descarga."""
+        log.info("INV Paso 6: Click en link de descarga inventario")
 
-        for y in ys:
-            for x in xs:
-                intento += 1
-                log.info(f"  [{intento:03d}] Click @ ({x}, {y})")
+        link_el = None
+        for espera in range(20):
+            await asyncio.sleep(0.5)
+            link_el = await self.page.query_selector(
+                "a[href*='Inv'], a[href*='inv'], a[href*='.zip'], a[href*='.xls']"
+            )
+            if link_el and await link_el.is_visible():
+                texto = (await link_el.inner_text()).strip()
+                log.info(f"  [{espera+1}] Link: '{texto}'")
+                break
+            log.info(f"  [{espera+1}] Esperando link inventario...")
 
-                await self.page.mouse.move(x, y)
-                await asyncio.sleep(0.1)
-                await self.page.mouse.click(x, y)
-                await asyncio.sleep(1.2)
+        await self._screenshot("inv_paso6_modal_descarga")
 
-                await self.page.screenshot(
-                    path=str(LOG_DIR / f"inv_diag_{intento:03d}_x{x}_y{y}.png"),
-                    timeout=5000
-                )
+        if not link_el:
+            raise Exception("Link inventario no encontrado")
 
-                if await self.page.evaluate(JS_EXITO):
-                    log.info(f"  ✅✅✅ BOTÓN INVENTARIO @ ({x}, {y}) ✅✅✅")
-                    encontrado = (x, y)
-                    await self.page.screenshot(
-                        path=str(LOG_DIR / f"inv_EXITO_x{x}_y{y}.png"), timeout=8000
-                    )
-                    return encontrado
-
-                n_despues = await self.page.evaluate(JS_CELDAS)
-                if n_despues < 20 and n_antes >= 20:
-                    log.warning(f"  Modal cerrado por ({x},{y})")
-                    ok = await reabrir_modal()
-                    if not ok:
-                        return None
-                    n_antes = await self.page.evaluate(JS_CELDAS)
-                    break
-
-        log.warning("Botón inventario no encontrado en grilla")
-        return None
+        try:
+            async with self.page.expect_download(timeout=60000) as dl_info:
+                await link_el.click()
+            download = await dl_info.value
+            dest = DOWNLOAD_DIR / download.suggested_filename
+            await download.save_as(str(dest))
+            log.info(f"  ✅ Inventario descargado: {dest}")
+            await self._screenshot("inv_paso6_descarga_ok")
+            return str(dest)
+        except Exception as e:
+            log.error(f"  Error descarga inventario: {e}")
+            await self._screenshot("inv_error_descarga")
+            return None
 
     async def run(self):
         result = {"success": False, "archivo_descargado": None, "error": None}
@@ -923,13 +1013,15 @@ class VentaDiariaRPA:
                     await self.step_inv1_navegar_inventario()
                     await self.step_inv2_generar_informe()
                     await self.step_inv3_dobleclick_1974206()
-                    coords_inv = await self.step_inv4_diagnostico_boton()
-                    if coords_inv:
-                        log.info(f"✅ Botón inventario encontrado @ {coords_inv}")
+                    await self.step_inv4_click_boton_descarga()
+                    await self.step_inv5_seleccionar_dato_fuente()
+                    archivo_inv = await self.step_inv6_descargar_archivo()
+                    if archivo_inv:
+                        log.info(f"✅ Inventario descargado | {archivo_inv}")
                         result["success"] = True
-                        result["coords_boton_inventario"] = str(coords_inv)
+                        result["archivo_inventario"] = archivo_inv
                     else:
-                        result["error"] = "Botón inventario no encontrado"
+                        result["error"] = "Descarga inventario fallida"
                 else:
                     result["error"] = "Descarga ventas fallida"
             except Exception as e:
