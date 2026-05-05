@@ -1060,10 +1060,69 @@ class VentaDiariaRPA:
         await self._esperar_conexion()
         await self._screenshot("inv_paso4_antes")
 
-        candidatos = [
+        # Primero intentar localizar el botón ↓ en el DOM del modal actual
+        # (más robusto que coordenadas fijas, ya que el modal de inventario
+        #  puede tener un tamaño/posición diferente al de ventas)
+        coords_boton = await self.page.evaluate("""
+            () => {
+                // Buscar dentro del modal Detalle de Inventario
+                for (const el of document.querySelectorAll('*')) {
+                    if (el.textContent.trim() === 'Detalle de Inventario' &&
+                        el.offsetParent !== null) {
+                        let contenedor = el;
+                        for (let i = 0; i < 15; i++) {
+                            contenedor = contenedor.parentElement;
+                            if (!contenedor) break;
+                            // Botón ↓ azul: v-button con ícono de descarga
+                            for (const sel of [
+                                '.v-button.toolbar-button',
+                                '.v-button[class*="download"]',
+                                '.v-button[class*="export"]',
+                                '[class*="bbr-popupbutton"]'
+                            ]) {
+                                for (const btn of contenedor.querySelectorAll(sel)) {
+                                    const r = btn.getBoundingClientRect();
+                                    if (r.width > 0 && r.height > 0 &&
+                                        r.width < 50 && r.top > 50)
+                                        return {x: Math.round(r.left+r.width/2),
+                                                y: Math.round(r.top+r.height/2),
+                                                fuente: 'DOM'};
+                                }
+                            }
+                            // Cualquier botón pequeño (≤40px) en la esquina superior
+                            // del modal que esté a la derecha (x > 900)
+                            for (const btn of contenedor.querySelectorAll(
+                                '.v-button, button'
+                            )) {
+                                const r = btn.getBoundingClientRect();
+                                if (r.width > 0 && r.width <= 40 &&
+                                    r.left > 900 && r.top > 50 && r.top < 250)
+                                    return {x: Math.round(r.left+r.width/2),
+                                            y: Math.round(r.top+r.height/2),
+                                            fuente: 'DOM-esquina'};
+                            }
+                        }
+                    }
+                }
+                return null;
+            }
+        """)
+
+        if coords_boton:
+            log.info(f"  Botón ↓ encontrado en DOM @ ({coords_boton['x']}, {coords_boton['y']}) [{coords_boton['fuente']}]")
+            candidatos_dom = [(coords_boton['x'], coords_boton['y'])]
+        else:
+            log.warning("  Botón ↓ no encontrado en DOM — usando candidatos por coordenada")
+            candidatos_dom = []
+
+        # Coordenadas fijas: primero las del modal de inventario (más angosto),
+        # luego las del modal de ventas como fallback
+        candidatos_fijos = [
+            (1117, 157),  # esquina sup-der del modal inventario (confirmado en screenshot)
             (1064, 180), (1075, 192), (1070, 185), (1070, 192),
             (1080, 192), (1060, 192), (1075, 185), (1075, 180),
         ]
+        candidatos = candidatos_dom + candidatos_fijos
 
         for x, y in candidatos:
             # ── Verificar conexión antes de cada intento ──────────────────
