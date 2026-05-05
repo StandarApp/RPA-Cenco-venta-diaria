@@ -1411,9 +1411,12 @@ class VentaDiariaRPA:
                     # la aplicación desde cero. Es la única forma 100% confiable
                     # de limpiar modales que quedaron en estado inconsistente
                     # tras pérdidas de conexión — ningún click en el DOM los cierra.
-                    log.info("  Reset sesión: goto BASE_URL + nuevo login")
+                    # El goto a BASE_URL lleva a la pantalla de selección País/Unidad,
+                    # no directamente al Keycloak — hay que pasar por step1 primero.
+                    log.info("  Reset sesión: goto BASE_URL + step1 + login")
                     await self.page.goto(BASE_URL, wait_until="networkidle", timeout=30000)
                     await self._screenshot("inv_reset_goto_base")
+                    await self.step1_select_pais_y_unidad()
                     if not await self.step2_login():
                         raise Exception("Login fallido en reset de sesión para inventario")
                     await self._screenshot("inv_inicio_pantalla_limpia")
