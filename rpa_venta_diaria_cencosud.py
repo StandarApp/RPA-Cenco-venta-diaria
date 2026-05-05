@@ -475,11 +475,36 @@ class VentaDiariaRPA:
         await self._screenshot("paso5_modal_abierto")
         log.info("Paso 5 completado")
 
+    async def _esperar_conexion(self, timeout_s=30):
+        """Espera hasta que desaparezca el banner de reconexión de Vaadin."""
+        for i in range(timeout_s * 2):
+            desconectado = await self.page.evaluate("""
+                () => {
+                    for (const el of document.querySelectorAll('*')) {
+                        const t = el.textContent || '';
+                        if (t.includes('perdió conexión') ||
+                            t.includes('Reconectando') ||
+                            t.includes('Lost connection')) {
+                            if (el.offsetParent !== null) return true;
+                        }
+                    }
+                    return false;
+                }
+            """)
+            if not desconectado:
+                return True
+            log.warning(f"  Conexión perdida — esperando [{i+1}/{timeout_s*2}]...")
+            await asyncio.sleep(0.5)
+        log.error("  Timeout esperando reconexión")
+        return False
+
     async def step6_click_boton_descarga(self):
         """
         Click en botón ↓ del modal. Prueba click normal y JS dispatch.
+        Espera reconexión si la plataforma la perdió.
         """
         log.info("Paso 6: Click en botón ↓ del modal")
+        await self._esperar_conexion()
         await self._screenshot("paso6_antes")
 
         JS_FORMATO = """
@@ -751,10 +776,12 @@ class VentaDiariaRPA:
     async def step_inv4_diagnostico_boton(self):
         """
         Diagnóstico sistemático del botón ↓ del modal de inventario.
+        Espera reconexión si es necesario.
         Prueba grilla de coordenadas hasta encontrar el que abre
         Formato de Descarga o el popup con opciones.
         """
         log.info("INV Paso 4: Diagnóstico botón ↓ del modal inventario")
+        await self._esperar_conexion()
         await self._screenshot("inv_paso4_antes")
 
         JS_EXITO = """
