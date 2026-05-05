@@ -215,7 +215,13 @@ class VentaDiariaRPA:
 
     async def step1_select_pais_y_unidad(self):
         log.info("Paso 1: Chile + Supermercados")
-        await self.page.goto(BASE_URL, wait_until="networkidle", timeout=30000)
+        # En el reset de sesión ya estamos en BASE_URL, así que el goto es opcional
+        # pero lo dejamos para el flujo inicial. Si ya estamos en el dashboard, saltar.
+        if not _es_dashboard(self.page.url):
+            try:
+                await self.page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
+            except Exception:
+                pass  # Ignorar timeout del goto — la página puede ya estar cargada
         await self._screenshot("paso1_inicio")
         if _es_dashboard(self.page.url):
             log.info("Sesión activa — saltando")
@@ -229,8 +235,13 @@ class VentaDiariaRPA:
             await selects[1].select_option(label="Supermercados")
             await self._wait(800, 1200)
         btn = await self.page.wait_for_selector("#btnIngresar", timeout=8000)
-        await btn.click()
-        await self.page.wait_for_load_state("networkidle", timeout=20000)
+        # Usar click con no_wait_after=True para no bloquear esperando la navegación.
+        # La redirección SSO puede tardar >30s — step2_login() maneja la espera vía polling.
+        try:
+            await btn.click(no_wait_after=True, timeout=5000)
+        except Exception:
+            # Si el click mismo falla, intentar via JS como fallback
+            await self.page.evaluate("document.getElementById('btnIngresar').click()")
         log.info(f"Paso 1 OK | URL: {self.page.url}")
 
     async def step2_login(self):
