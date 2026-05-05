@@ -53,7 +53,16 @@ def _es_dashboard(url):
 
 
 def _fecha_ayer():
-    return (datetime.now() - timedelta(days=1)).strftime("%d-%m-%Y")
+    """Retorna fecha de ayer en hora de Chile (America/Santiago)."""
+    try:
+        import zoneinfo
+        tz_chile = zoneinfo.ZoneInfo("America/Santiago")
+        ahora_chile = datetime.now(tz_chile)
+    except Exception:
+        # Fallback: UTC-4
+        ahora_chile = datetime.utcnow() - timedelta(hours=4)
+    ayer = ahora_chile - timedelta(days=1)
+    return ayer.strftime("%d-%m-%Y")
 
 
 class VentaDiariaRPA:
