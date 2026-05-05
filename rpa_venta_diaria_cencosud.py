@@ -75,7 +75,7 @@ def _fecha_ayer():
     actualice los datos del día real.
     Ejemplo: FORCE_DATE=04-05-2026
     """
-    force = os.getenv("FORCE_DATE", "04-05-2026").strip()  # TEMPORAL: forzar fecha para pruebas
+    force = os.getenv("FORCE_DATE", "03-05-2026").strip()  # TEMPORAL: forzar fecha para pruebas
     if force:
         log.info(f"  ⚠️  FORCE_DATE activo: usando '{force}' como fecha de ayer")
         return force
