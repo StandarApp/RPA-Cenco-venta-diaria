@@ -734,68 +734,108 @@ class VentaDiariaRPA:
 
     async def _cerrar_modales_abiertos(self):
         """
-        Cierra cualquier modal/popup de Vaadin que esté abierto (X roja o CANCELAR).
-        Esencial para liberar el menú superior antes de navegar a otra sección.
+        Cierra todos los modales/popups de Vaadin que estén abiertos.
+
+        FIX v3:
+        - Prioriza CANCELAR sobre la X — es el botón diseñado para cerrar
+          el modal "Formato de Descarga" limpiamente sin disparar acciones.
+        - Después de cada click, espera activamente (hasta 2s) a que ese
+          modal desaparezca del DOM antes de buscar el siguiente.
+        - Verifica al final que no quede ningún modal visible.
+        - Usa Escape como fallback final si quedan modales resistentes.
         """
         log.info("  Cerrando modales abiertos...")
         cerrado_alguno = False
 
-        for intento in range(6):
-            resultado = await self.page.evaluate("""
-                () => {
-                    // v-window-closebox (X estándar de ventanas Vaadin)
-                    for (const sel of [
-                        '.v-window-closebox',
-                        '.v-window-header .v-button',
-                        '[class*="closebox"]'
-                    ]) {
-                        for (const el of document.querySelectorAll(sel)) {
+        JS_HAY_MODAL = """
+            () => {
+                for (const sel of [
+                    '.v-window', '.v-window-wrap', '.v-dialog',
+                    '.v-overlay-container .v-window'
+                ]) {
+                    for (const el of document.querySelectorAll(sel)) {
+                        if (el.offsetParent !== null) return true;
+                    }
+                }
+                return false;
+            }
+        """
+
+        JS_BUSCAR_BOTON_CIERRE = """
+            () => {
+                // 1. CANCELAR primero — cierre limpio de modales de formato/descarga
+                for (const el of document.querySelectorAll(
+                    'button, .v-button, .gwt-Button, span, div'
+                )) {
+                    const t = el.textContent.trim().toUpperCase();
+                    if (t === 'CANCELAR' && el.offsetParent !== null) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0)
+                            return {x: Math.round(r.left+r.width/2),
+                                    y: Math.round(r.top+r.height/2),
+                                    tipo: 'CANCELAR'};
+                    }
+                }
+                // 2. v-window-closebox (X estándar de ventanas Vaadin)
+                for (const sel of [
+                    '.v-window-closebox',
+                    '[class*="closebox"]'
+                ]) {
+                    for (const el of document.querySelectorAll(sel)) {
+                        if (el.offsetParent !== null) {
                             const r = el.getBoundingClientRect();
-                            if (r.width > 0 && r.height > 0 && r.top > 0)
+                            if (r.width > 0 && r.height > 0)
                                 return {x: Math.round(r.left+r.width/2),
                                         y: Math.round(r.top+r.height/2),
                                         tipo: 'closebox'};
                         }
                     }
-                    // Botón X literal (texto exacto "X") en modales pequeños
-                    for (const el of document.querySelectorAll('button, span, div')) {
-                        if (el.textContent.trim() === 'X' && el.offsetParent !== null) {
-                            const r = el.getBoundingClientRect();
-                            if (r.width > 0 && r.width < 50 && r.top > 0)
-                                return {x: Math.round(r.left+r.width/2),
-                                        y: Math.round(r.top+r.height/2),
-                                        tipo: 'X-texto'};
-                        }
-                    }
-                    // Botón CANCELAR en modales de formato/descarga
-                    for (const el of document.querySelectorAll(
-                        'button, .v-button, .gwt-Button, span, div'
-                    )) {
-                        if (el.textContent.trim().toUpperCase() === 'CANCELAR') {
-                            const r = el.getBoundingClientRect();
-                            if (r.width > 0 && r.height > 0 && r.left > 0)
-                                return {x: Math.round(r.left+r.width/2),
-                                        y: Math.round(r.top+r.height/2),
-                                        tipo: 'CANCELAR'};
-                        }
-                    }
-                    return null;
                 }
-            """)
+                // 3. Texto "X" literal en botón pequeño de modal
+                for (const el of document.querySelectorAll('button, span, div')) {
+                    if (el.textContent.trim() === 'X' && el.offsetParent !== null) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 0 && r.width < 60 && r.top > 0)
+                            return {x: Math.round(r.left+r.width/2),
+                                    y: Math.round(r.top+r.height/2),
+                                    tipo: 'X-texto'};
+                    }
+                }
+                return null;
+            }
+        """
 
-            if not resultado:
+        for intento in range(8):
+            hay_modal = await self.page.evaluate(JS_HAY_MODAL)
+            if not hay_modal:
                 break
 
-            log.info(f"  Click '{resultado['tipo']}' @ ({resultado['x']}, {resultado['y']})")
-            await self.page.mouse.move(resultado["x"], resultado["y"])
-            await asyncio.sleep(0.2)
-            await self.page.mouse.click(resultado["x"], resultado["y"])
-            await asyncio.sleep(0.8)
+            boton = await self.page.evaluate(JS_BUSCAR_BOTON_CIERRE)
+            if not boton:
+                # No encontramos botón pero hay modal — intentar Escape
+                log.warning(f"  Modal visible pero sin botón cierre — Escape [{intento+1}]")
+                await self.page.keyboard.press("Escape")
+            else:
+                log.info(f"  Click '{boton['tipo']}' @ ({boton['x']}, {boton['y']})")
+                await self.page.mouse.move(boton["x"], boton["y"])
+                await asyncio.sleep(0.3)
+                await self.page.mouse.click(boton["x"], boton["y"])
+
             cerrado_alguno = True
 
-        if cerrado_alguno:
+            # Esperar activamente a que este modal desaparezca (hasta 2s)
+            for t in range(4):
+                await asyncio.sleep(0.5)
+                if not await self.page.evaluate(JS_HAY_MODAL):
+                    break
+
+        # Verificación final
+        queda_modal = await self.page.evaluate(JS_HAY_MODAL)
+        if queda_modal:
+            log.warning("  ⚠️ Aún hay modales visibles tras cierre — continuando igual")
+        elif cerrado_alguno:
             log.info("  ✅ Modales cerrados")
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(1.0)  # dar tiempo a Vaadin para re-renderizar
         else:
             log.info("  No había modales abiertos")
 
@@ -813,6 +853,22 @@ class VentaDiariaRPA:
         """
         log.info("INV Paso 1: Abastecimiento → Detalle de Inventario")
         await self._wait(2000, 3000)
+
+        # Guardia: si aún hay un modal abierto el menú superior estará bloqueado
+        hay_modal = await self.page.evaluate("""
+            () => {
+                for (const sel of ['.v-window', '.v-window-wrap', '.v-dialog']) {
+                    for (const el of document.querySelectorAll(sel)) {
+                        if (el.offsetParent !== null) return true;
+                    }
+                }
+                return false;
+            }
+        """)
+        if hay_modal:
+            log.warning("  ⚠️ Hay modal abierto al iniciar inv1 — intentando cerrar de nuevo")
+            await self._cerrar_modales_abiertos()
+            await asyncio.sleep(1)
 
         for ciclo in range(8):
             log.info(f"  Ciclo {ciclo+1}/8")
