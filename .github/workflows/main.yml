@@ -9,8 +9,8 @@ on:
     - cron: '0 20 * * *'
     # Intento 4: 03:00 UTC
     - cron: '0 3 * * *'
-    # Intento 5: 08:20 UTC
-    - cron: '20 8 * * *'
+    # Intento 5: 09:10 UTC
+    - cron: '10 9 * * *'
     # Intento 6: 15:30 UTC
     - cron: '30 15 * * *'
   workflow_dispatch:
