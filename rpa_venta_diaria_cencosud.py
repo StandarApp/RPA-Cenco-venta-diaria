@@ -29,6 +29,9 @@ FIXES v4 (2026-05-05):
            goto BASE_URL + step2_login() antes de iniciar inventario. Los modales
            que quedan en estado inconsistente tras pérdida de conexión son inmunes
            a clicks en el DOM — la única solución real es destruir la sesión del servidor.
+
+FIXES v5 (2026-05-05):
+  - _fecha_ayer(): removido FORCE_DATE — ahora usa siempre la fecha real de ayer en Chile
 """
 
 import asyncio
@@ -79,8 +82,6 @@ def _leer_excel_de_zip(zip_path):
                 continue
             raw = z.read(nombre)
             if ext == ".csv":
-                # Los CSV de Cencosud vienen en UTF-16-LE sin BOM — probar primero
-                # y luego fallback a otros encodings comunes
                 for encoding in ("utf-16-le", "utf-8-sig", "latin-1", "utf-8"):
                     for sep in (",", ";", "\t"):
                         try:
@@ -100,7 +101,6 @@ def _leer_excel_de_zip(zip_path):
                 log.info(f"  XLSX leido: {len(df)} filas, columnas: {list(df.columns)}")
                 return df
             elif ext == ".xls":
-                # .xls (Excel 97-2003) requiere xlrd
                 df = pd.read_excel(io.BytesIO(raw), engine="xlrd")
                 log.info(f"  XLS leido: {len(df)} filas, columnas: {list(df.columns)}")
                 return df
@@ -162,7 +162,6 @@ def subir_ventas(zip_path):
     log.info("=" * 50)
     log.info("Subiendo VENTAS a Supabase...")
     log.info("=" * 50)
-    # Los datos son siempre de ayer — usar _fecha_ayer() en formato YYYY-MM-DD
     fecha_hoy = datetime.strptime(_fecha_ayer(), "%d-%m-%Y").strftime("%Y-%m-%d")
     sb = _supabase_client()
     df = _leer_excel_de_zip(zip_path)
@@ -225,13 +224,13 @@ def _es_dashboard(url):
 
 def _fecha_ayer():
     """
-    Retorna fecha de ayer en hora de Chile (America/Santiago).
+    Retorna fecha de ayer en hora de Chile (America/Santiago) en formato DD-MM-YYYY.
     Si la variable de entorno FORCE_DATE está definida (formato DD-MM-YYYY),
     la usa directamente — útil para pruebas sin esperar que la plataforma
     actualice los datos del día real.
     Ejemplo: FORCE_DATE=04-05-2026
     """
-    force = os.getenv("FORCE_DATE", "03-05-2026").strip()  # TEMPORAL: forzar fecha para pruebas
+    force = os.getenv("FORCE_DATE", "").strip()
     if force:
         log.info(f"  ⚠️  FORCE_DATE activo: usando '{force}' como fecha de ayer")
         return force
@@ -240,7 +239,7 @@ def _fecha_ayer():
         tz_chile = zoneinfo.ZoneInfo("America/Santiago")
         ahora_chile = datetime.now(tz_chile)
     except Exception:
-        ahora_chile = datetime.utcnow() - timedelta(hours=4)
+        ahora_chile = datetime.utcnow() - timedelta(hours=3)
     ayer = ahora_chile - timedelta(days=1)
     return ayer.strftime("%d-%m-%Y")
 
@@ -340,18 +339,13 @@ class VentaDiariaRPA:
         """
         return await self.page.evaluate("""
             () => {
-                // Modal 'Formato de Descarga' — título específico
                 for (const el of document.querySelectorAll('*')) {
                     const t = el.textContent.trim();
                     if (el.offsetParent === null) continue;
-                    // Título del modal de formato
                     if (t === 'Formato de Descarga') return true;
-                    // Popup con opciones de Dato Fuente
                     if (t.includes('Dato Fuente') && t.length < 80) return true;
-                    // Modal Descargar Archivo (aparece después de SELECCIONAR)
                     if (t === 'Descargar Archivo') return true;
                 }
-                // Popup de menú contextual de Vaadin
                 for (const sel of [
                     'td.gwt-MenuItem',
                     '.v-menubar-popup td',
@@ -385,13 +379,11 @@ class VentaDiariaRPA:
 
     async def step1_select_pais_y_unidad(self):
         log.info("Paso 1: Chile + Supermercados")
-        # En el reset de sesión ya estamos en BASE_URL, así que el goto es opcional
-        # pero lo dejamos para el flujo inicial. Si ya estamos en el dashboard, saltar.
         if not _es_dashboard(self.page.url):
             try:
                 await self.page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
             except Exception:
-                pass  # Ignorar timeout del goto — la página puede ya estar cargada
+                pass
         await self._screenshot("paso1_inicio")
         if _es_dashboard(self.page.url):
             log.info("Sesión activa — saltando")
@@ -405,12 +397,9 @@ class VentaDiariaRPA:
             await selects[1].select_option(label="Supermercados")
             await self._wait(800, 1200)
         btn = await self.page.wait_for_selector("#btnIngresar", timeout=8000)
-        # Usar click con no_wait_after=True para no bloquear esperando la navegación.
-        # La redirección SSO puede tardar >30s — step2_login() maneja la espera vía polling.
         try:
             await btn.click(no_wait_after=True, timeout=5000)
         except Exception:
-            # Si el click mismo falla, intentar via JS como fallback
             await self.page.evaluate("document.getElementById('btnIngresar').click()")
         log.info(f"Paso 1 OK | URL: {self.page.url}")
 
@@ -420,9 +409,6 @@ class VentaDiariaRPA:
             log.info("✅ Sesión activa")
             return True
 
-        # Esperar hasta 60s a que aparezca #kc-login o el dashboard.
-        # El redirect SSO post-Ingresar puede tardar bastante, especialmente
-        # en el reset de sesión donde la redirección parte desde BASE_URL.
         kc_listo = False
         for i in range(60):
             await asyncio.sleep(1)
@@ -576,8 +562,7 @@ class VentaDiariaRPA:
 
         log.info(f"  ✅ Fecha HASTA correcta: {fecha_hasta}")
 
-        # Usar la misma fecha que _fecha_ayer() — respeta FORCE_DATE si está activo
-        fecha_ayer_str = _fecha_ayer()  # DD-MM-YYYY
+        fecha_ayer_str = _fecha_ayer()
         try:
             ayer_dt = datetime.strptime(fecha_ayer_str, "%d-%m-%Y")
         except Exception:
@@ -586,7 +571,7 @@ class VentaDiariaRPA:
                 tz_chile = zoneinfo.ZoneInfo("America/Santiago")
                 ayer_dt = datetime.now(tz_chile) - timedelta(days=1)
             except Exception:
-                ayer_dt = datetime.utcnow() - timedelta(hours=4) - timedelta(days=1)
+                ayer_dt = datetime.utcnow() - timedelta(hours=3) - timedelta(days=1)
         dia_ayer  = ayer_dt.day
         mes_ayer  = ayer_dt.month
         anio_ayer = ayer_dt.year
@@ -693,9 +678,6 @@ class VentaDiariaRPA:
     async def step5_dobleclick_1974206(self):
         log.info("Paso 5: Doble click en 1974206")
         await self._wait(1000, 2000)
-
-        # Si hubo pérdida de conexión al generar el informe, esperar reconexión
-        # antes de buscar la celda — si no, la tabla está vacía y falla
         await self._esperar_conexion()
 
         JS_CELDA = """
@@ -719,8 +701,6 @@ class VentaDiariaRPA:
             }
         """
 
-        # Esperar hasta 30s a que la celda 1974206 aparezca en la tabla
-        # (puede tardar si Vaadin acaba de reconectar y está re-renderizando)
         coords = None
         for espera in range(15):
             coords = await self.page.evaluate(JS_CELDA)
@@ -767,20 +747,7 @@ class VentaDiariaRPA:
         return modal_listo
 
     async def step6_click_boton_descarga(self):
-        """
-        Click en botón ↓ del modal Detalle de Producto.
-
-        FIX v2:
-        - Llama _esperar_conexion() ANTES de cada intento.
-        - Después de cada click, detecta si Vaadin perdió conexión.
-        - Si se pierde conexión, espera reconexión y verifica si el modal sigue abierto.
-        - Si el modal se cerró tras la reconexión, retorna False para que run()
-          pueda reintentar desde step5.
-        - Retorna True si el popup de descarga quedó abierto, False si no.
-        """
         log.info("Paso 6: Click en botón ↓ del modal")
-
-        # Esperar que la conexión esté estable antes de empezar
         await self._esperar_conexion()
         await self._screenshot("paso6_antes")
 
@@ -790,22 +757,16 @@ class VentaDiariaRPA:
         ]
 
         for x, y in candidatos:
-            # ── Verificar conexión antes de cada intento ──────────────────
             if await self._conexion_perdida_ahora():
                 log.warning(f"  ⚠️ Conexión perdida antes de probar ({x}, {y}) — esperando...")
                 recuperado = await self._esperar_conexion()
                 if not recuperado:
-                    log.error("  No se recuperó la conexión — abortando paso 6")
                     return False
-                await asyncio.sleep(1.5)  # dar tiempo a Vaadin para re-renderizar
-
-                # Si el modal se cerró durante la reconexión no tiene sentido
-                # seguir con las coords — hay que reintentar desde step5
+                await asyncio.sleep(1.5)
                 if not await self._modal_detalle_visible("Detalle de Producto"):
                     log.warning("  Modal se cerró tras reconexión — se necesita reintentar step5")
                     return False
 
-            # ── Intento 1: click normal de mouse ──────────────────────────
             log.info(f"  Click normal ({x}, {y})...")
             await self.page.mouse.move(x, y)
             await asyncio.sleep(0.2)
@@ -818,25 +779,17 @@ class VentaDiariaRPA:
                 log.info("Paso 6 completado")
                 return True
 
-            # ── Detectar pérdida de conexión post-click ───────────────────
             if await self._conexion_perdida_ahora():
                 log.warning(f"  ⚠️ Conexión perdida tras click ({x}, {y}) — esperando reconexión...")
                 await self._screenshot(f"paso6_conexion_perdida_{x}_{y}")
                 recuperado = await self._esperar_conexion()
-                await asyncio.sleep(2.0)  # Vaadin necesita tiempo para re-renderizar
-
+                await asyncio.sleep(2.0)
                 if not recuperado:
-                    log.error("  Timeout en reconexión — abortando paso 6")
                     return False
-
                 if not await self._modal_detalle_visible("Detalle de Producto"):
                     log.warning("  Modal cerrado tras reconexión — reintentar step5")
                     return False
 
-                # Conexión recuperada y modal sigue abierto → continuar con JS dispatch
-                log.info("  Conexión recuperada y modal sigue abierto — probando JS dispatch...")
-
-            # ── Intento 2: JS dispatch (mousedown + mouseup + click) ──────
             log.info(f"  JS dispatch ({x}, {y})...")
             await self.page.evaluate(f"""
                 () => {{
@@ -856,24 +809,19 @@ class VentaDiariaRPA:
                 log.info("Paso 6 completado")
                 return True
 
-            # ── Detectar pérdida de conexión post JS dispatch ─────────────
             if await self._conexion_perdida_ahora():
                 log.warning(f"  ⚠️ Conexión perdida tras JS dispatch ({x}, {y}) — esperando...")
                 await self._screenshot(f"paso6_conexion_perdida_js_{x}_{y}")
                 recuperado = await self._esperar_conexion()
                 await asyncio.sleep(2.0)
-
                 if not recuperado:
-                    log.error("  Timeout en reconexión — abortando paso 6")
                     return False
-
                 if not await self._modal_detalle_visible("Detalle de Producto"):
                     log.warning("  Modal cerrado tras reconexión — reintentar step5")
                     return False
 
             log.info(f"  ({x},{y}) sin resultado")
 
-        # Agotamos todos los candidatos sin éxito
         await self._screenshot("paso6_post_click")
         log.warning("  ⚠️ Ninguna coordenada abrió el popup de descarga")
         log.info("Paso 6 completado (sin éxito confirmado)")
@@ -960,17 +908,6 @@ class VentaDiariaRPA:
     # ─────────────────────────────────────────────
 
     async def _cerrar_modales_abiertos(self):
-        """
-        Cierra todos los modales/popups de Vaadin que estén abiertos.
-
-        FIX v3:
-        - Prioriza CANCELAR sobre la X — es el botón diseñado para cerrar
-          el modal "Formato de Descarga" limpiamente sin disparar acciones.
-        - Después de cada click, espera activamente (hasta 2s) a que ese
-          modal desaparezca del DOM antes de buscar el siguiente.
-        - Verifica al final que no quede ningún modal visible.
-        - Usa Escape como fallback final si quedan modales resistentes.
-        """
         log.info("  Cerrando modales abiertos...")
         cerrado_alguno = False
 
@@ -990,7 +927,6 @@ class VentaDiariaRPA:
 
         JS_BUSCAR_BOTON_CIERRE = """
             () => {
-                // 1. CANCELAR primero — cierre limpio de modales de formato/descarga
                 for (const el of document.querySelectorAll(
                     'button, .v-button, .gwt-Button, span, div'
                 )) {
@@ -1003,11 +939,7 @@ class VentaDiariaRPA:
                                     tipo: 'CANCELAR'};
                     }
                 }
-                // 2. v-window-closebox (X estándar de ventanas Vaadin)
-                for (const sel of [
-                    '.v-window-closebox',
-                    '[class*="closebox"]'
-                ]) {
+                for (const sel of ['.v-window-closebox', '[class*="closebox"]']) {
                     for (const el of document.querySelectorAll(sel)) {
                         if (el.offsetParent !== null) {
                             const r = el.getBoundingClientRect();
@@ -1018,7 +950,6 @@ class VentaDiariaRPA:
                         }
                     }
                 }
-                // 3. Texto "X" literal en botón pequeño de modal
                 for (const el of document.querySelectorAll('button, span, div')) {
                     if (el.textContent.trim() === 'X' && el.offsetParent !== null) {
                         const r = el.getBoundingClientRect();
@@ -1036,10 +967,8 @@ class VentaDiariaRPA:
             hay_modal = await self.page.evaluate(JS_HAY_MODAL)
             if not hay_modal:
                 break
-
             boton = await self.page.evaluate(JS_BUSCAR_BOTON_CIERRE)
             if not boton:
-                # No encontramos botón pero hay modal — intentar Escape
                 log.warning(f"  Modal visible pero sin botón cierre — Escape [{intento+1}]")
                 await self.page.keyboard.press("Escape")
             else:
@@ -1047,37 +976,22 @@ class VentaDiariaRPA:
                 await self.page.mouse.move(boton["x"], boton["y"])
                 await asyncio.sleep(0.3)
                 await self.page.mouse.click(boton["x"], boton["y"])
-
             cerrado_alguno = True
-
-            # Esperar activamente a que este modal desaparezca (hasta 2s)
             for t in range(4):
                 await asyncio.sleep(0.5)
                 if not await self.page.evaluate(JS_HAY_MODAL):
                     break
 
-        # Verificación final
         queda_modal = await self.page.evaluate(JS_HAY_MODAL)
         if queda_modal:
             log.warning("  ⚠️ Aún hay modales visibles tras cierre — continuando igual")
         elif cerrado_alguno:
             log.info("  ✅ Modales cerrados")
-            await asyncio.sleep(1.0)  # dar tiempo a Vaadin para re-renderizar
+            await asyncio.sleep(1.0)
         else:
             log.info("  No había modales abiertos")
 
     async def step_inv1_navegar_inventario(self):
-        """
-        Abastecimiento → Detalle de Inventario.
-
-        FIX v2:
-        - Espera hasta 3s a que el submenú de Abastecimiento sea visible antes de
-          intentar clickear "Detalle de Inventario" (antes fallaba silenciosamente
-          porque el submenú no había aparecido todavía).
-        - Loguea explícitamente si "Detalle de Inventario" no fue encontrado para
-          distinguirlo de "Abastecimiento no encontrado".
-        - Sube ciclos máximos a 8 para mayor resiliencia.
-        """
         log.info("INV Paso 1: Abastecimiento → Detalle de Inventario")
         await self._wait(2000, 3000)
 
@@ -1089,9 +1003,8 @@ class VentaDiariaRPA:
                 await asyncio.sleep(3)
                 continue
 
-            # Esperar a que el submenú de Abastecimiento sea visible
             submenu_visible = False
-            for t in range(6):  # hasta 3s
+            for t in range(6):
                 await asyncio.sleep(0.5)
                 submenu_visible = await self.page.evaluate("""
                     () => {
@@ -1121,11 +1034,8 @@ class VentaDiariaRPA:
 
             for espera in range(20):
                 await asyncio.sleep(2)
-                # Verificar que el panel activo sea "Detalle de Inventario"
-                # No basta con encontrar "Generar Informe" — puede estar en el panel de ventas
                 ok2 = await self.page.evaluate("""
                     () => {
-                        // Buscar indicadores específicos del panel Detalle de Inventario
                         const textos = ['Detalle de Inventario', 'Inventario'];
                         for (const t of textos) {
                             for (const el of document.querySelectorAll(
@@ -1133,7 +1043,6 @@ class VentaDiariaRPA:
                             )) {
                                 if (el.textContent.trim().includes(t) &&
                                     el.offsetParent !== null) {
-                                    // Además debe existir Generar Informe visible
                                     const tieneBoton = [...document.querySelectorAll('*')]
                                         .some(e => e.children.length===0 &&
                                                    e.textContent.trim()==='Generar Informe' &&
@@ -1157,7 +1066,6 @@ class VentaDiariaRPA:
         log.info("INV Paso 1 completado")
 
     async def step_inv2_generar_informe(self):
-        """Click en Generar Informe del panel de inventario."""
         log.info("INV Paso 2: Generar Informe")
         for _ in range(10):
             await asyncio.sleep(1)
@@ -1197,7 +1105,6 @@ class VentaDiariaRPA:
         log.info("INV Paso 2 completado")
 
     async def step_inv3_dobleclick_1974206(self):
-        """Doble click en celda adyacente a 1974206 → modal locales."""
         log.info("INV Paso 3: Doble click en 1974206")
         await self._wait(1000, 2000)
 
@@ -1234,7 +1141,6 @@ class VentaDiariaRPA:
             }
         """
 
-        # Esperar hasta 30s a que la celda aparezca (puede tardar tras reconexión)
         coords = None
         for espera in range(15):
             coords = await self.page.evaluate(JS_CELDA)
@@ -1272,24 +1178,12 @@ class VentaDiariaRPA:
         return modal_listo
 
     async def step_inv4_click_boton_descarga(self):
-        """
-        Click en botón ↓ del modal inventario.
-
-        FIX v2: misma lógica que step6 — detecta pérdida de conexión entre
-        intentos y retorna False si el modal se cierra, para que run() pueda
-        reintentar desde step_inv3.
-        """
         log.info("INV Paso 4: Click botón ↓ del modal inventario")
-
         await self._esperar_conexion()
         await self._screenshot("inv_paso4_antes")
 
-        # Primero intentar localizar el botón ↓ en el DOM del modal actual
-        # (más robusto que coordenadas fijas, ya que el modal de inventario
-        #  puede tener un tamaño/posición diferente al de ventas)
         coords_boton = await self.page.evaluate("""
             () => {
-                // Buscar dentro del modal Detalle de Inventario
                 for (const el of document.querySelectorAll('*')) {
                     if (el.textContent.trim() === 'Detalle de Inventario' &&
                         el.offsetParent !== null) {
@@ -1297,7 +1191,6 @@ class VentaDiariaRPA:
                         for (let i = 0; i < 15; i++) {
                             contenedor = contenedor.parentElement;
                             if (!contenedor) break;
-                            // Botón ↓ azul: v-button con ícono de descarga
                             for (const sel of [
                                 '.v-button.toolbar-button',
                                 '.v-button[class*="download"]',
@@ -1313,11 +1206,7 @@ class VentaDiariaRPA:
                                                 fuente: 'DOM'};
                                 }
                             }
-                            // Cualquier botón pequeño (≤40px) en la esquina superior
-                            // del modal que esté a la derecha (x > 900)
-                            for (const btn of contenedor.querySelectorAll(
-                                '.v-button, button'
-                            )) {
+                            for (const btn of contenedor.querySelectorAll('.v-button, button')) {
                                 const r = btn.getBoundingClientRect();
                                 if (r.width > 0 && r.width <= 40 &&
                                     r.left > 900 && r.top > 50 && r.top < 250)
@@ -1339,17 +1228,14 @@ class VentaDiariaRPA:
             log.warning("  Botón ↓ no encontrado en DOM — usando candidatos por coordenada")
             candidatos_dom = []
 
-        # Coordenadas fijas: primero las del modal de inventario (más angosto),
-        # luego las del modal de ventas como fallback
         candidatos_fijos = [
-            (1117, 157),  # esquina sup-der del modal inventario (confirmado en screenshot)
+            (1117, 157),
             (1064, 180), (1075, 192), (1070, 185), (1070, 192),
             (1080, 192), (1060, 192), (1075, 185), (1075, 180),
         ]
         candidatos = candidatos_dom + candidatos_fijos
 
         for x, y in candidatos:
-            # ── Verificar conexión antes de cada intento ──────────────────
             if await self._conexion_perdida_ahora():
                 log.warning(f"  ⚠️ Conexión perdida antes de probar ({x}, {y}) — esperando...")
                 recuperado = await self._esperar_conexion()
@@ -1360,7 +1246,6 @@ class VentaDiariaRPA:
                     log.warning("  Modal inventario cerrado tras reconexión — reintentar inv3")
                     return False
 
-            # ── Intento 1: click normal ───────────────────────────────────
             log.info(f"  Probando ({x}, {y})...")
             await self.page.mouse.move(x, y)
             await asyncio.sleep(0.2)
@@ -1373,7 +1258,6 @@ class VentaDiariaRPA:
                 log.info("INV Paso 4 completado")
                 return True
 
-            # ── Detectar pérdida de conexión post-click ───────────────────
             if await self._conexion_perdida_ahora():
                 log.warning(f"  ⚠️ Conexión perdida tras click ({x}, {y}) — esperando...")
                 await self._screenshot(f"inv_paso4_conexion_perdida_{x}_{y}")
@@ -1385,7 +1269,6 @@ class VentaDiariaRPA:
                     log.warning("  Modal cerrado — reintentar inv3")
                     return False
 
-            # ── Intento 2: JS dispatch ────────────────────────────────────
             log.info(f"  JS dispatch ({x}, {y})...")
             await self.page.evaluate(f"""
                 () => {{
@@ -1423,10 +1306,6 @@ class VentaDiariaRPA:
         return False
 
     async def step_inv5_seleccionar_dato_fuente(self):
-        """
-        Seleccionar 'Descargar Dato Fuente Período' del popup o
-        click SELECCIONAR si apareció Formato de Descarga directamente.
-        """
         log.info("INV Paso 5: Seleccionar Dato Fuente / Formato")
         await asyncio.sleep(1)
 
@@ -1524,36 +1403,17 @@ class VentaDiariaRPA:
         log.info("INV Paso 5 completado")
 
     async def step_inv6_descargar_archivo(self):
-        """
-        Click en link de descarga del inventario.
-
-        FIX v2:
-        El selector genérico `a[href*='.zip']` capturaba el link de Ventas que
-        quedaba visible en el modal anterior, descargando el archivo equivocado.
-
-        Estrategia corregida:
-        1. Buscar el link dentro del modal "Descargar Archivo" que esté activo
-           (el más reciente / el que tiene el modal padre visible).
-        2. Si hay varios links .zip visibles, tomar el que está dentro del modal
-           más al frente (z-index más alto o el último en el DOM).
-        3. Fallback: el link visible más reciente en el DOM.
-        """
         log.info("INV Paso 6: Click en link de descarga inventario")
 
         link_el = None
         for espera in range(20):
             await asyncio.sleep(0.5)
 
-            # Buscar el link dentro del modal "Descargar Archivo" activo
-            # Prioridad: link dentro de un modal con título "Descargar Archivo"
             link_info = await self.page.evaluate("""
                 () => {
-                    // Buscar todos los modales "Descargar Archivo" visibles
-                    const modales = [];
                     for (const el of document.querySelectorAll('*')) {
                         if (el.textContent.trim() === 'Descargar Archivo' &&
                             el.offsetParent !== null) {
-                            // Subir hasta encontrar el contenedor del modal
                             let contenedor = el;
                             for (let i = 0; i < 10; i++) {
                                 contenedor = contenedor.parentElement;
@@ -1577,7 +1437,6 @@ class VentaDiariaRPA:
 
             if link_info and link_info.get("found"):
                 log.info(f"  [{espera+1}] Link en modal 'Descargar Archivo': '{link_info['texto']}'")
-                # Ahora obtener el ElementHandle real de ese link
                 link_el = await self.page.evaluate_handle("""
                     () => {
                         for (const el of document.querySelectorAll('*')) {
@@ -1598,7 +1457,6 @@ class VentaDiariaRPA:
                         return null;
                     }
                 """)
-                # evaluate_handle puede retornar JSHandle de null
                 is_null = await self.page.evaluate("el => el === null", link_el)
                 if not is_null:
                     break
@@ -1659,7 +1517,6 @@ class VentaDiariaRPA:
                 await self.step3_navegar_ventas()
                 await self.step4_setear_fecha_y_generar()
 
-                # ── Ventas: step5 + step6 con reintento por pérdida de conexión ──
                 MAX_REINTENTOS_VENTAS = 3
                 popup_ventas_ok = False
                 for reintento in range(MAX_REINTENTOS_VENTAS):
@@ -1673,7 +1530,6 @@ class VentaDiariaRPA:
                     log.warning(f"  step6 retornó False (reintento {reintento+1}/{MAX_REINTENTOS_VENTAS})")
 
                 if not popup_ventas_ok:
-                    log.error("  ❌ No se pudo abrir popup de descarga en ventas tras reintentos")
                     raise Exception("Popup descarga ventas no abierto tras reintentos")
 
                 await self.step7_seleccionar_formato()
@@ -1683,19 +1539,10 @@ class VentaDiariaRPA:
                     result["archivo_ventas"] = archivo
                     log.info(f"✅ Ventas descargado | {archivo}")
 
-                    # ── Inventario encadenado ──────────────────────────────
                     log.info("=" * 50)
                     log.info("Iniciando RPA Inventario...")
                     log.info("=" * 50)
 
-                    # RESET DE SESIÓN VAADIN antes de inventario.
-                    # Navegar a BASE_URL destruye toda la sesión Vaadin del servidor
-                    # (modales, estado de paneles, cache de datos) y reconstruye
-                    # la aplicación desde cero. Es la única forma 100% confiable
-                    # de limpiar modales que quedaron en estado inconsistente
-                    # tras pérdidas de conexión — ningún click en el DOM los cierra.
-                    # El goto a BASE_URL lleva a la pantalla de selección País/Unidad,
-                    # no directamente al Keycloak — hay que pasar por step1 primero.
                     log.info("  Reset sesión: goto BASE_URL + step1 + login")
                     await self.page.goto(BASE_URL, wait_until="networkidle", timeout=30000)
                     await self._screenshot("inv_reset_goto_base")
@@ -1707,7 +1554,6 @@ class VentaDiariaRPA:
                     await self.step_inv1_navegar_inventario()
                     await self.step_inv2_generar_informe()
 
-                    # step_inv3 + step_inv4 con reintento por pérdida de conexión
                     MAX_REINTENTOS_INV = 3
                     popup_inv_ok = False
                     for reintento in range(MAX_REINTENTOS_INV):
@@ -1721,7 +1567,6 @@ class VentaDiariaRPA:
                         log.warning(f"  inv4 retornó False (reintento {reintento+1}/{MAX_REINTENTOS_INV})")
 
                     if not popup_inv_ok:
-                        log.error("  ❌ No se pudo abrir popup de descarga en inventario tras reintentos")
                         result["error"] = "Popup descarga inventario no abierto tras reintentos"
                     else:
                         await self.step_inv5_seleccionar_dato_fuente()
@@ -1731,7 +1576,6 @@ class VentaDiariaRPA:
                             result["success"] = True
                             result["archivo_inventario"] = archivo_inv
 
-                            # ── Subida a Supabase ──────────────────────────
                             log.info("=" * 50)
                             log.info("Iniciando subida a Supabase...")
                             log.info("=" * 50)
