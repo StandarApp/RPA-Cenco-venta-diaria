@@ -9,7 +9,8 @@ Flujo:
      - Si fecha_plataforma > fecha_max_ventas_supabase → correr ventas
      - Si no → saltar ventas
   5. Doble click en celda adyacente a 1974206 → modal Detalle de Producto
-  6. Click botón ↓ → popup descarga
+  6. Click en primera fila del modal (activa el botón ↓)
+     Click botón ↓ → popup descarga
   7. Click SELECCIONAR → modal Formato de Descarga
   8. Click link Ventas(detalleProducto)*.zip → descarga
   Reset sesión Vaadin
@@ -47,10 +48,6 @@ def _supabase_client():
 
 
 def _fecha_max_supabase(tabla, columna="fecha"):
-    """
-    Retorna la fecha más reciente de la columna indicada en la tabla.
-    Retorna un objeto date, o None si la tabla está vacía.
-    """
     try:
         sb = _supabase_client()
         resp = sb.table(tabla).select(columna).order(columna, desc=True).limit(1).execute()
@@ -64,10 +61,6 @@ def _fecha_max_supabase(tabla, columna="fecha"):
 
 
 def _parsear_fecha_plataforma(fecha_str):
-    """
-    Convierte fecha de la plataforma (DD-MM-YYYY) a objeto date.
-    Retorna None si no se puede parsear.
-    """
     for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y"):
         try:
             return datetime.strptime(fecha_str.strip(), fmt).date()
@@ -137,9 +130,6 @@ def _limpiar_numero(valor):
 
 
 def subir_ventas(zip_path, fecha_plataforma):
-    """
-    fecha_plataforma: objeto date — es la fecha HASTA leída de la plataforma.
-    """
     log.info("=" * 50)
     log.info("Subiendo VENTAS a Supabase...")
     log.info("=" * 50)
@@ -179,9 +169,6 @@ def subir_ventas(zip_path, fecha_plataforma):
 
 
 def subir_inventario(zip_path, fecha_plataforma):
-    """
-    fecha_plataforma: objeto date — es la fecha de completitud leída de la plataforma.
-    """
     log.info("=" * 50)
     log.info("Subiendo INVENTARIO a Supabase...")
     log.info("=" * 50)
@@ -249,9 +236,8 @@ class VentaDiariaRPA:
         self.password = password
         self.headless  = headless
         self.page      = None
-        # Fechas máximas consultadas al inicio desde Supabase
-        self.fecha_max_ventas     = None  # objeto date o None
-        self.fecha_max_inventario = None  # objeto date o None
+        self.fecha_max_ventas     = None
+        self.fecha_max_inventario = None
 
     async def _wait(self, min_ms=500, max_ms=1200):
         import random
@@ -358,6 +344,52 @@ class VentaDiariaRPA:
             }}
         """)
 
+    async def _click_fila_modal(self, titulo_modal="Detalle de Producto"):
+        """
+        Click en la primera fila de la tabla del modal para activarla.
+        Esto es necesario para que el botón ↓ quede habilitado.
+        """
+        coords = await self.page.evaluate(f"""
+            () => {{
+                // Buscar el modal por su título
+                for (const el of document.querySelectorAll('*')) {{
+                    if (el.textContent.trim() === '{titulo_modal}' &&
+                        el.offsetParent !== null) {{
+                        // Buscar la primera fila de la tabla dentro del modal
+                        let contenedor = el;
+                        for (let i = 0; i < 20; i++) {{
+                            contenedor = contenedor.parentElement;
+                            if (!contenedor) break;
+                            // Buscar primera celda visible de la tabla
+                            const celdas = contenedor.querySelectorAll(
+                                '.v-grid-body td, .v-grid-body .v-grid-cell'
+                            );
+                            for (const celda of celdas) {{
+                                const r = celda.getBoundingClientRect();
+                                if (r.width > 0 && r.height > 0 && r.top > 100) {{
+                                    return {{
+                                        x: Math.round(r.left + r.width / 2),
+                                        y: Math.round(r.top + r.height / 2)
+                                    }};
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+                return null;
+            }}
+        """)
+        if coords:
+            log.info(f"  Click en primera fila del modal @ ({coords['x']}, {coords['y']})")
+            await self.page.mouse.move(coords["x"], coords["y"])
+            await asyncio.sleep(0.3)
+            await self.page.mouse.click(coords["x"], coords["y"])
+            await asyncio.sleep(0.5)
+            return True
+        else:
+            log.warning(f"  No se encontró fila del modal '{titulo_modal}' para click previo")
+            return False
+
     # ─────────────────────────────────────────────
     # PASO 0: Consultar fechas máximas en Supabase
     # ─────────────────────────────────────────────
@@ -368,7 +400,7 @@ class VentaDiariaRPA:
         log.info("=" * 50)
         self.fecha_max_ventas = _fecha_max_supabase("ventas_cencosud")
         self.fecha_max_inventario = _fecha_max_supabase("inventarios_cencosud")
-        log.info(f"  Fecha max ventas_cencosud:     {self.fecha_max_ventas}")
+        log.info(f"  Fecha max ventas_cencosud:      {self.fecha_max_ventas}")
         log.info(f"  Fecha max inventarios_cencosud: {self.fecha_max_inventario}")
 
     # ─────────────────────────────────────────────
@@ -496,9 +528,7 @@ class VentaDiariaRPA:
         """
         Lee la fecha HASTA de la plataforma.
         Compara con fecha_max_ventas de Supabase.
-        Retorna (fecha_plataforma, debe_correr):
-          - fecha_plataforma: objeto date leído de la plataforma
-          - debe_correr: True si fecha_plataforma > fecha_max_ventas_supabase
+        Retorna (fecha_plataforma, debe_correr).
         """
         log.info("Paso 4: Leer fecha HASTA y comparar con Supabase")
         await self._screenshot("paso4_antes")
@@ -546,17 +576,16 @@ class VentaDiariaRPA:
         log.info(f"  Fecha HASTA plataforma:    {fecha_hasta}")
 
         if self.fecha_max_ventas is not None and fecha_hasta <= self.fecha_max_ventas:
-            log.info(f"  ⏭️  Ventas ya al día — plataforma={fecha_hasta} <= supabase={self.fecha_max_ventas} — saltando")
+            log.info(f"  ⏭️  Ventas ya al día — saltando")
             return fecha_hasta, False
 
-        log.info(f"  ✅ Hay datos nuevos de ventas — plataforma={fecha_hasta} > supabase={self.fecha_max_ventas}")
+        log.info(f"  ✅ Hay datos nuevos de ventas")
 
         # Setear fecha DESDE = misma fecha HASTA via calendario
         try:
-            ayer_dt = fecha_hasta
-            dia_ayer  = ayer_dt.day
-            mes_ayer  = ayer_dt.month
-            anio_ayer = ayer_dt.year
+            dia_ayer  = fecha_hasta.day
+            mes_ayer  = fecha_hasta.month
+            anio_ayer = fecha_hasta.year
             log.info(f"  Abriendo calendario DESDE para seleccionar día {dia_ayer}/{mes_ayer}/{anio_ayer}")
 
             icono_cal = await self.page.evaluate("""
@@ -731,6 +760,10 @@ class VentaDiariaRPA:
         await self._esperar_conexion()
         await self._screenshot("paso6_antes")
 
+        # ── FIX: Click en primera fila del modal para activar botón ↓ ──
+        await self._click_fila_modal("Detalle de Producto")
+        await asyncio.sleep(0.5)
+
         candidatos = [
             (1075, 192), (1064, 180), (1070, 185), (1070, 192),
             (1080, 192), (1060, 192), (1075, 185), (1075, 180),
@@ -765,7 +798,6 @@ class VentaDiariaRPA:
                 if not recuperado:
                     return False
                 if not await self._modal_detalle_visible("Detalle de Producto"):
-                    log.warning("  Modal cerrado — reintentar step5")
                     return False
 
             log.info(f"  JS dispatch ({x}, {y})...")
@@ -956,18 +988,14 @@ class VentaDiariaRPA:
         log.info("INV Paso 2: Leer fecha de completitud y comparar con Supabase")
         await self._screenshot("inv_paso2_antes")
 
-        # Leer la fecha de completitud — aparece como "Inventario  DD-MM-YYYY  100,00 %"
         fecha_completitud_str = await self.page.evaluate("""
             () => {
-                // Buscar texto que contenga patrón de fecha DD-MM-YYYY
-                // en el área de completitud del panel
                 const regex = /\b(\d{2}-\d{2}-\d{4})\b/;
                 for (const el of document.querySelectorAll('*')) {
                     if (el.children.length === 0 && el.offsetParent !== null) {
                         const t = el.textContent.trim();
                         const match = t.match(regex);
                         if (match) {
-                            // Verificar que esté cerca del texto "Inventario" o "Completitud"
                             let padre = el.parentElement;
                             for (let i = 0; i < 5; i++) {
                                 if (!padre) break;
@@ -980,7 +1008,7 @@ class VentaDiariaRPA:
                         }
                     }
                 }
-                // Fallback: buscar cualquier fecha visible en el panel
+                // Fallback: cualquier fecha visible
                 for (const el of document.querySelectorAll('*')) {
                     if (el.children.length === 0 && el.offsetParent !== null) {
                         const match = el.textContent.trim().match(/\b(\d{2}-\d{2}-\d{4})\b/);
@@ -1002,10 +1030,10 @@ class VentaDiariaRPA:
         log.info(f"  Fecha completitud plataforma:  {fecha_completitud}")
 
         if self.fecha_max_inventario is not None and fecha_completitud <= self.fecha_max_inventario:
-            log.info(f"  ⏭️  Inventario ya al día — plataforma={fecha_completitud} <= supabase={self.fecha_max_inventario} — saltando")
+            log.info(f"  ⏭️  Inventario ya al día — saltando")
             return fecha_completitud, False
 
-        log.info(f"  ✅ Hay datos nuevos de inventario — plataforma={fecha_completitud} > supabase={self.fecha_max_inventario}")
+        log.info(f"  ✅ Hay datos nuevos de inventario")
         return fecha_completitud, True
 
     async def step_inv3_generar_informe(self):
@@ -1120,38 +1148,16 @@ class VentaDiariaRPA:
         log.info("INV Paso 5: Click botón ↓ del modal inventario")
         await self._esperar_conexion()
 
-        coords_boton = await self.page.evaluate("""
-            () => {
-                for (const el of document.querySelectorAll('*')) {
-                    if (el.textContent.trim() === 'Detalle de Inventario' &&
-                        el.offsetParent !== null) {
-                        let contenedor = el;
-                        for (let i = 0; i < 15; i++) {
-                            contenedor = contenedor.parentElement;
-                            if (!contenedor) break;
-                            for (const btn of contenedor.querySelectorAll('.v-button, button')) {
-                                const r = btn.getBoundingClientRect();
-                                if (r.width > 0 && r.width <= 40 &&
-                                    r.left > 900 && r.top > 50 && r.top < 250)
-                                    return {x: Math.round(r.left+r.width/2),
-                                            y: Math.round(r.top+r.height/2),
-                                            fuente: 'DOM'};
-                            }
-                        }
-                    }
-                }
-                return null;
-            }
-        """)
+        # ── FIX: Click en primera fila del modal para activar botón ↓ ──
+        await self._click_fila_modal("Detalle de Inventario")
+        await asyncio.sleep(0.5)
 
-        candidatos = []
-        if coords_boton:
-            log.info(f"  Botón ↓ DOM @ ({coords_boton['x']}, {coords_boton['y']})")
-            candidatos.append((coords_boton['x'], coords_boton['y']))
-        candidatos += [(1117, 157), (1064, 180), (1075, 192), (1070, 185),
-                       (1070, 192), (1080, 192), (1060, 192)]
+        candidatos_fijos = [
+            (1117, 157), (1075, 192), (1064, 180), (1070, 185),
+            (1070, 192), (1080, 192), (1060, 192),
+        ]
 
-        for x, y in candidatos:
+        for x, y in candidatos_fijos:
             if await self._conexion_perdida_ahora():
                 recuperado = await self._esperar_conexion()
                 if not recuperado:
@@ -1380,7 +1386,7 @@ class VentaDiariaRPA:
             "error": None
         }
 
-        # ── Paso 0: Consultar fechas máximas en Supabase ──────────────────
+        # ── Paso 0: Consultar fechas máximas en Supabase ──
         self.step0_consultar_fechas_supabase()
 
         async with async_playwright() as p:
@@ -1406,7 +1412,7 @@ class VentaDiariaRPA:
                     result["error"] = "Login fallido"
                     return result
 
-                # ── VENTAS ────────────────────────────────────────────────
+                # ── VENTAS ────────────────────────────────
                 await self.step3_navegar_ventas()
                 fecha_plataforma_ventas, correr_ventas = await self.step4_verificar_fecha_y_generar()
 
@@ -1435,7 +1441,7 @@ class VentaDiariaRPA:
                 else:
                     log.info("⏭️  Ventas saltadas — datos ya al día en Supabase")
 
-                # ── RESET SESIÓN VAADIN ───────────────────────────────────
+                # ── RESET SESIÓN VAADIN ───────────────────
                 log.info("  Reset sesión: goto BASE_URL + step1 + login")
                 await self.page.goto(BASE_URL, wait_until="networkidle", timeout=30000)
                 await self._screenshot("inv_reset_goto_base")
@@ -1443,7 +1449,7 @@ class VentaDiariaRPA:
                 if not await self.step2_login():
                     raise Exception("Login fallido en reset de sesión para inventario")
 
-                # ── INVENTARIO ────────────────────────────────────────────
+                # ── INVENTARIO ────────────────────────────
                 await self.step_inv1_navegar_inventario()
                 fecha_plataforma_inv, correr_inventario = await self.step_inv2_verificar_fecha_completitud()
 
@@ -1474,19 +1480,17 @@ class VentaDiariaRPA:
                 else:
                     log.info("⏭️  Inventario saltado — datos ya al día en Supabase")
 
-                # ── SUBIDA A SUPABASE ─────────────────────────────────────
+                # ── SUBIDA A SUPABASE ─────────────────────
                 if result["ventas_corridas"] or result["inventario_corrido"]:
                     log.info("=" * 50)
                     log.info("Subiendo a Supabase...")
                     log.info("=" * 50)
-
                     if result["ventas_corridas"] and result["archivo_ventas"]:
                         try:
                             subir_ventas(result["archivo_ventas"], fecha_plataforma_ventas)
                         except Exception as e:
                             log.error(f"  Error subiendo ventas: {e}")
                             result["error_supabase_ventas"] = str(e)
-
                     if result["inventario_corrido"] and result["archivo_inventario"]:
                         try:
                             subir_inventario(result["archivo_inventario"], fecha_plataforma_inv)
@@ -1494,7 +1498,6 @@ class VentaDiariaRPA:
                             log.error(f"  Error subiendo inventario: {e}")
                             result["error_supabase_inventario"] = str(e)
 
-                # Éxito completo = ambos corrieron o ambos ya estaban al día
                 if result["ventas_corridas"] and result["inventario_corrido"]:
                     result["success"] = True
                 elif not correr_ventas and not correr_inventario:
