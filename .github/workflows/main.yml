@@ -1,21 +1,13 @@
 name: RPA Cencosud Venta Diaria
-
 on:
   schedule:
-    # Hora Chile (UTC-3 en invierno, UTC-4 en verano — ajustar según DST)
-    # Intento 1: 1:00 PM Chile = 16:00 UTC
-    - cron: '0 16 * * *'
-    # Intento 2: 1:30 PM Chile = 16:30 UTC
-    - cron: '30 16 * * *'
-    # Intento 3: 2:30 PM Chile = 17:30 UTC
+    # Intento 1: 17:30 UTC
     - cron: '30 17 * * *'
-    # Intento 4: 3:30 PM Chile = 18:30 UTC
-    - cron: '30 18 * * *'
-    # Intento 5: 4:30 PM Chile = 19:30 UTC
-    - cron: '30 19 * * *'
-    # Intento 6: 11:30 PM Chile = 02:30 UTC (dia siguiente)
-    - cron: '30 2 * * *'
-  workflow_dispatch:  # permite correrlo manualmente desde GitHub
+    # Intento 2: 18:15 UTC
+    - cron: '15 18 * * *'
+    # Intento 3: 23:45 UTC
+    - cron: '45 23 * * *'
+  workflow_dispatch:
 
 jobs:
   check_already_done:
@@ -31,14 +23,11 @@ jobs:
         run: |
           AYER=$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)
           echo "Verificando si ya hay datos para fecha: $AYER"
-
           RESPONSE=$(curl -s \
             -H "apikey: $SUPABASE_KEY" \
             -H "Authorization: Bearer $SUPABASE_KEY" \
             "$SUPABASE_URL/rest/v1/ventas_cencosud?fecha=eq.$AYER&select=id&limit=1")
-
           echo "Respuesta Supabase: $RESPONSE"
-
           if echo "$RESPONSE" | grep -q '"id"'; then
             echo "Ya hay datos para $AYER — saltando ejecucion"
             echo "should_run=false" >> $GITHUB_OUTPUT
