@@ -4,8 +4,8 @@ on:
     # Hora Chile (UTC-3 en invierno, UTC-4 en verano — ajustar según DST)
     # Intento 7: 5:30 AM Chile = 08:30 UTC
     - cron: '30 8 * * *'
-    # Intento 9: 7:20 AM Chile = 10:20 UTC
-    - cron: '20 10 * * *'
+    # Intento 9: 8:15 AM Chile = 11:15 UTC
+    - cron: '15 11 * * *'
     # Intento 8: 11:45 AM Chile = 14:45 UTC
     - cron: '45 14 * * *'
     # Intento 1: 1:00 PM Chile = 16:00 UTC
