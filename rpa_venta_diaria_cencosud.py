@@ -1290,44 +1290,36 @@ class VentaDiariaRPA:
         #  puede tener un tamaño/posición diferente al de ventas)
         coords_boton = await self.page.evaluate("""
             () => {
-                // Buscar dentro del modal Detalle de Inventario
+                // Estrategia 1: posición relativa al modal
                 for (const el of document.querySelectorAll('*')) {
                     if (el.textContent.trim() === 'Detalle de Inventario' &&
                         el.offsetParent !== null) {
                         let contenedor = el;
-                        for (let i = 0; i < 15; i++) {
+                        for (let i = 0; i < 20; i++) {
                             contenedor = contenedor.parentElement;
                             if (!contenedor) break;
-                            // Botón ↓ azul: v-button con ícono de descarga
-                            for (const sel of [
-                                '.v-button.toolbar-button',
-                                '.v-button[class*="download"]',
-                                '.v-button[class*="export"]',
-                                '[class*="bbr-popupbutton"]'
-                            ]) {
-                                for (const btn of contenedor.querySelectorAll(sel)) {
-                                    const r = btn.getBoundingClientRect();
-                                    if (r.width > 0 && r.height > 0 &&
-                                        r.width < 50 && r.top > 50)
-                                        return {x: Math.round(r.left+r.width/2),
-                                                y: Math.round(r.top+r.height/2),
-                                                fuente: 'DOM'};
+                            const cls = contenedor.className || '';
+                            if (cls.includes('v-window') || cls.includes('v-overlay')) {
+                                const r = contenedor.getBoundingClientRect();
+                                if (r.width > 200 && r.height > 200) {
+                                    return {
+                                        x: Math.round(r.right - 20),
+                                        y: Math.round(r.top + 80),
+                                        fuente: 'relativo-modal'
+                                    };
                                 }
-                            }
-                            // Cualquier botón pequeño (≤40px) en la esquina superior
-                            // del modal que esté a la derecha (x > 900)
-                            for (const btn of contenedor.querySelectorAll(
-                                '.v-button, button'
-                            )) {
-                                const r = btn.getBoundingClientRect();
-                                if (r.width > 0 && r.width <= 40 &&
-                                    r.left > 900 && r.top > 50 && r.top < 250)
-                                    return {x: Math.round(r.left+r.width/2),
-                                            y: Math.round(r.top+r.height/2),
-                                            fuente: 'DOM-esquina'};
                             }
                         }
                     }
+                }
+                // Estrategia 2: botón pequeño a la derecha
+                for (const btn of document.querySelectorAll('.v-button, button')) {
+                    const r = btn.getBoundingClientRect();
+                    if (r.width > 0 && r.width <= 40 &&
+                        r.left > 900 && r.top > 50 && r.top < 300)
+                        return {x: Math.round(r.left+r.width/2),
+                                y: Math.round(r.top+r.height/2),
+                                fuente: 'DOM-esquina'};
                 }
                 return null;
             }
