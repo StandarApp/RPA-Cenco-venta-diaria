@@ -2,6 +2,12 @@ name: RPA Cencosud Venta Diaria
 on:
   schedule:
     # Hora Chile (UTC-3 en invierno, UTC-4 en verano — ajustar según DST)
+    # Intento 7: 5:30 AM Chile = 08:30 UTC
+    - cron: '30 8 * * *'
+    # Intento 9: 7:20 AM Chile = 10:20 UTC
+    - cron: '20 10 * * *'
+    # Intento 8: 11:45 AM Chile = 14:45 UTC
+    - cron: '45 14 * * *'
     # Intento 1: 1:00 PM Chile = 16:00 UTC
     - cron: '0 16 * * *'
     # Intento 2: 1:30 PM Chile = 16:30 UTC
@@ -65,7 +71,6 @@ jobs:
           HEADLESS: "true"
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          FORCE_DATE: "02-06-2026"   # ← TEMPORAL: fuerza fecha ayer para prueba
         run: python rpa_venta_diaria_cencosud.py
       - name: Subir logs y descarga como artefacto
         if: always()
