@@ -1,40 +1,10 @@
 name: RPA Cencosud Venta Diaria
 on:
-  schedule:
-    - cron: '7 * * * *'    # cada hora a los :07
-    - cron: '22 * * * *'   # cada hora a los :22
-    - cron: '37 * * * *'   # cada hora a los :37
-    - cron: '51 * * * *'   # cada hora a los :52
+  repository_dispatch:
+    types: [run-rpa-venta-diaria]
   workflow_dispatch:
 jobs:
-  check_already_done:
-    runs-on: ubuntu-latest
-    outputs:
-      should_run: ${{ steps.check.outputs.should_run }}
-    steps:
-      - name: Verificar si ya corrio exitosamente hoy
-        id: check
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: |
-          AYER=$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)
-          echo "Verificando si ya hay datos para fecha: $AYER"
-          RESPONSE=$(curl -s \
-            -H "apikey: $SUPABASE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_KEY" \
-            "$SUPABASE_URL/rest/v1/ventas_cencosud?fecha=eq.$AYER&select=id&limit=1")
-          echo "Respuesta Supabase: $RESPONSE"
-          if echo "$RESPONSE" | grep -q '"id"'; then
-            echo "Ya hay datos para $AYER — saltando ejecucion"
-            echo "should_run=false" >> $GITHUB_OUTPUT
-          else
-            echo "No hay datos para $AYER — ejecutando RPA"
-            echo "should_run=true" >> $GITHUB_OUTPUT
-          fi
   rpa:
-    needs: check_already_done
-    if: needs.check_already_done.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
