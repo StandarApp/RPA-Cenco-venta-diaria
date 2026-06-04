@@ -1,7 +1,9 @@
 name: RPA Cencosud Venta Diaria
 on:
   schedule:
-    - cron: '0 * * * *'   # cada hora en punto — 24 intentos diarios
+    - cron: '0 * * * *'   # cada hora en punto
+    - cron: '20 * * * *'  # cada hora y 20 mins
+    - cron: '40 * * * *'  # cada hora y 40 mins
   workflow_dispatch:
 jobs:
   check_already_done:
