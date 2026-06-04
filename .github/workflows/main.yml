@@ -1,22 +1,55 @@
 name: RPA Cencosud Venta Diaria
+
 on:
   schedule:
-    # Intento 1: 17:15 UTC
-    - cron: '15 17 * * *'
-    # Intento 2: 18:15 UTC
-    - cron: '15 18 * * *'
-    # Intento 3: 20:00 UTC
-    - cron: '0 20 * * *'
-    # Intento 4: 03:00 UTC
-    - cron: '0 3 * * *'
-    # Intento 5: 09:10 UTC
-    - cron: '10 9 * * *'
-    # Intento 6: 15:30 UTC
-    - cron: '30 15 * * *'
-  workflow_dispatch:
+    # Hora Chile (UTC-3 en invierno, UTC-4 en verano — ajustar según DST)
+    # Intento 1: 1:00 PM Chile = 16:00 UTC
+    - cron: '0 16 * * *'
+    # Intento 2: 1:30 PM Chile = 16:30 UTC
+    - cron: '30 16 * * *'
+    # Intento 3: 2:30 PM Chile = 17:30 UTC
+    - cron: '30 17 * * *'
+    # Intento 4: 3:30 PM Chile = 18:30 UTC
+    - cron: '30 18 * * *'
+    # Intento 5: 4:30 PM Chile = 19:30 UTC
+    - cron: '30 19 * * *'
+    # Intento 6: 11:30 PM Chile = 02:30 UTC (dia siguiente)
+    - cron: '30 2 * * *'
+  workflow_dispatch:  # permite correrlo manualmente desde GitHub
 
 jobs:
+  check_already_done:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - name: Verificar si ya corrio exitosamente hoy
+        id: check
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          AYER=$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)
+          echo "Verificando si ya hay datos para fecha: $AYER"
+
+          RESPONSE=$(curl -s \
+            -H "apikey: $SUPABASE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_KEY" \
+            "$SUPABASE_URL/rest/v1/ventas_cencosud?fecha=eq.$AYER&select=id&limit=1")
+
+          echo "Respuesta Supabase: $RESPONSE"
+
+          if echo "$RESPONSE" | grep -q '"id"'; then
+            echo "Ya hay datos para $AYER — saltando ejecucion"
+            echo "should_run=false" >> $GITHUB_OUTPUT
+          else
+            echo "No hay datos para $AYER — ejecutando RPA"
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          fi
+
   rpa:
+    needs: check_already_done
+    if: needs.check_already_done.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
