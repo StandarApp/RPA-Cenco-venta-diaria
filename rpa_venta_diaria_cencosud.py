@@ -929,8 +929,8 @@ class VentaDiariaRPA:
     async def step8_descargar_archivo(self):
         log.info("Paso 8: Click en link de descarga")
         link_el = None
-        for espera in range(20):
-            await asyncio.sleep(0.5)
+        for espera in range(40):
+            await asyncio.sleep(1.5)
             link_el = await self.page.query_selector(
                 "a[href*='Ventas'], a[href*='ventas'], a[href*='.zip'], a[href*='.xls']"
             )
@@ -1535,8 +1535,8 @@ class VentaDiariaRPA:
         log.info("INV Paso 6: Click en link de descarga inventario")
 
         link_el = None
-        for espera in range(20):
-            await asyncio.sleep(0.5)
+        for espera in range(40):
+            await asyncio.sleep(1.5)
 
             # Buscar el link dentro del modal "Descargar Archivo" activo
             # Prioridad: link dentro de un modal con título "Descargar Archivo"
