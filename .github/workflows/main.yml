@@ -65,7 +65,7 @@ jobs:
           HEADLESS: "true"
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          FORCE_DATE: "03-06-2026"   # ← TEMPORAL: fuerza fecha ayer para prueba
+          FORCE_DATE: "02-06-2026"   # ← TEMPORAL: fuerza fecha ayer para prueba
         run: python rpa_venta_diaria_cencosud.py
       - name: Subir logs y descarga como artefacto
         if: always()
