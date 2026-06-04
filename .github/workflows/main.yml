@@ -1,26 +1,8 @@
 name: RPA Cencosud Venta Diaria
 on:
   schedule:
-    # Hora Chile (UTC-3 en invierno, UTC-4 en verano — ajustar según DST)
-    # Intento 7: 5:30 AM Chile = 08:30 UTC
-    - cron: '30 8 * * *'
-    # Intento 9: 8:15 AM Chile = 11:15 UTC
-    - cron: '15 11 * * *'
-    # Intento 8: 11:45 AM Chile = 14:45 UTC
-    - cron: '45 14 * * *'
-    # Intento 1: 1:00 PM Chile = 16:00 UTC
-    - cron: '0 16 * * *'
-    # Intento 2: 1:30 PM Chile = 16:30 UTC
-    - cron: '30 16 * * *'
-    # Intento 3: 2:30 PM Chile = 17:30 UTC
-    - cron: '30 17 * * *'
-    # Intento 4: 3:30 PM Chile = 18:30 UTC
-    - cron: '30 18 * * *'
-    # Intento 5: 4:30 PM Chile = 19:30 UTC
-    - cron: '30 19 * * *'
-    # Intento 6: 11:30 PM Chile = 02:30 UTC (dia siguiente)
-    - cron: '30 2 * * *'
-  workflow_dispatch:  # permite correrlo manualmente desde GitHub
+    - cron: '0 * * * *'   # cada hora en punto — 24 intentos diarios
+  workflow_dispatch:
 jobs:
   check_already_done:
     runs-on: ubuntu-latest
