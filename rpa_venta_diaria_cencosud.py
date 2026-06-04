@@ -1538,16 +1538,14 @@ class VentaDiariaRPA:
         for espera in range(40):
             await asyncio.sleep(1.5)
 
-            # Buscar el link dentro del modal "Descargar Archivo" activo
-            # Prioridad: link dentro de un modal con título "Descargar Archivo"
+            # Estrategia 1: buscar por título del modal "Descargar Archivo"
+            # Estrategia 2: buscar cualquier link .zip con "InvDetalle" visible
             link_info = await self.page.evaluate("""
                 () => {
-                    // Buscar todos los modales "Descargar Archivo" visibles
-                    const modales = [];
+                    // Estrategia 1: modal por título
                     for (const el of document.querySelectorAll('*')) {
                         if (el.textContent.trim() === 'Descargar Archivo' &&
                             el.offsetParent !== null) {
-                            // Subir hasta encontrar el contenedor del modal
                             let contenedor = el;
                             for (let i = 0; i < 10; i++) {
                                 contenedor = contenedor.parentElement;
@@ -1555,25 +1553,36 @@ class VentaDiariaRPA:
                                 const link = contenedor.querySelector('a[href]');
                                 if (link) {
                                     const r = link.getBoundingClientRect();
-                                    if (r.width > 0 && r.height > 0) {
-                                        return {
-                                            texto: link.textContent.trim(),
-                                            found: true
-                                        };
-                                    }
+                                    if (r.width > 0 && r.height > 0)
+                                        return {texto: link.textContent.trim(), found: true, via: 'titulo'};
                                 }
                             }
                         }
+                    }
+                    // Estrategia 2: cualquier link InvDetalle visible
+                    for (const a of document.querySelectorAll('a[href]')) {
+                        const r = a.getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0 &&
+                            (a.textContent.includes('InvDetalle') || a.href.includes('InvDetalle')))
+                            return {texto: a.textContent.trim(), found: true, via: 'href'};
+                    }
+                    // Estrategia 3: cualquier link .zip visible
+                    for (const a of document.querySelectorAll('a[href]')) {
+                        const r = a.getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0 &&
+                            (a.href.includes('.zip') || a.textContent.includes('.zip')))
+                            return {texto: a.textContent.trim(), found: true, via: 'zip'};
                     }
                     return {found: false};
                 }
             """)
 
             if link_info and link_info.get("found"):
-                log.info(f"  [{espera+1}] Link en modal 'Descargar Archivo': '{link_info['texto']}'")
-                # Ahora obtener el ElementHandle real de ese link
+                log.info(f"  [{espera+1}] Link encontrado via '{link_info.get('via')}': '{link_info['texto']}'")
+                # Obtener el ElementHandle real
                 link_el = await self.page.evaluate_handle("""
                     () => {
+                        // Estrategia 1: modal por título
                         for (const el of document.querySelectorAll('*')) {
                             if (el.textContent.trim() === 'Descargar Archivo' &&
                                 el.offsetParent !== null) {
@@ -1589,10 +1598,23 @@ class VentaDiariaRPA:
                                 }
                             }
                         }
+                        // Estrategia 2: link InvDetalle visible
+                        for (const a of document.querySelectorAll('a[href]')) {
+                            const r = a.getBoundingClientRect();
+                            if (r.width > 0 && r.height > 0 &&
+                                (a.textContent.includes('InvDetalle') || a.href.includes('InvDetalle')))
+                                return a;
+                        }
+                        // Estrategia 3: cualquier link .zip visible
+                        for (const a of document.querySelectorAll('a[href]')) {
+                            const r = a.getBoundingClientRect();
+                            if (r.width > 0 && r.height > 0 &&
+                                (a.href.includes('.zip') || a.textContent.includes('.zip')))
+                                return a;
+                        }
                         return null;
                     }
                 """)
-                # evaluate_handle puede retornar JSHandle de null
                 is_null = await self.page.evaluate("el => el === null", link_el)
                 if not is_null:
                     break
