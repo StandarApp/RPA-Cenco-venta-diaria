@@ -1342,7 +1342,8 @@ class VentaDiariaRPA:
         # Coordenadas fijas: primero las del modal de inventario (más angosto),
         # luego las del modal de ventas como fallback
         candidatos_fijos = [
-            (1117, 157),  # esquina sup-der del modal inventario (confirmado en screenshot)
+            (1277, 226),  # ← botón ↓ azul confirmado en screenshot inv_paso4_antes
+            (1117, 157),
             (1064, 180), (1075, 192), (1070, 185), (1070, 192),
             (1080, 192), (1060, 192), (1075, 185), (1075, 180),
         ]
