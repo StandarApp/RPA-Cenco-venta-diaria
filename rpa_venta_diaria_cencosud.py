@@ -747,7 +747,8 @@ class VentaDiariaRPA:
                     const n = document.querySelectorAll('.v-grid-body .v-grid-cell').length;
                     let modal = false;
                     for (const el of document.querySelectorAll('*')) {
-                        if (el.textContent.trim()==='Detalle de Producto' &&
+                        if ((el.textContent.trim()==='Detalle de Producto' ||
+                             el.textContent.trim()==='Detalle de Inventario') &&
                             el.offsetParent !== null) { modal = true; break; }
                     }
                     return {n: n, ok: n > 50 || modal};
