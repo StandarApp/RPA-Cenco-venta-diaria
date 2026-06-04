@@ -1,5 +1,4 @@
 name: RPA Cencosud Venta Diaria
-
 on:
   schedule:
     # Hora Chile (UTC-3 en invierno, UTC-4 en verano — ajustar según DST)
@@ -16,7 +15,6 @@ on:
     # Intento 6: 11:30 PM Chile = 02:30 UTC (dia siguiente)
     - cron: '30 2 * * *'
   workflow_dispatch:  # permite correrlo manualmente desde GitHub
-
 jobs:
   check_already_done:
     runs-on: ubuntu-latest
@@ -31,14 +29,11 @@ jobs:
         run: |
           AYER=$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)
           echo "Verificando si ya hay datos para fecha: $AYER"
-
           RESPONSE=$(curl -s \
             -H "apikey: $SUPABASE_KEY" \
             -H "Authorization: Bearer $SUPABASE_KEY" \
             "$SUPABASE_URL/rest/v1/ventas_cencosud?fecha=eq.$AYER&select=id&limit=1")
-
           echo "Respuesta Supabase: $RESPONSE"
-
           if echo "$RESPONSE" | grep -q '"id"'; then
             echo "Ya hay datos para $AYER — saltando ejecucion"
             echo "should_run=false" >> $GITHUB_OUTPUT
@@ -46,7 +41,6 @@ jobs:
             echo "No hay datos para $AYER — ejecutando RPA"
             echo "should_run=true" >> $GITHUB_OUTPUT
           fi
-
   rpa:
     needs: check_already_done
     if: needs.check_already_done.outputs.should_run == 'true'
@@ -55,18 +49,15 @@ jobs:
     steps:
       - name: Checkout codigo
         uses: actions/checkout@v4
-
       - name: Instalar Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Instalar dependencias
         run: |
           pip install playwright python-dotenv pandas openpyxl xlrd supabase
           playwright install chromium
           playwright install-deps chromium
-
       - name: Ejecutar RPA
         env:
           CENC_USER: ${{ secrets.CENC_USER }}
@@ -74,8 +65,8 @@ jobs:
           HEADLESS: "true"
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          FORCE_DATE: "03-06-2026"   # ← TEMPORAL: fuerza fecha ayer para prueba
         run: python rpa_venta_diaria_cencosud.py
-
       - name: Subir logs y descarga como artefacto
         if: always()
         uses: actions/upload-artifact@v4
